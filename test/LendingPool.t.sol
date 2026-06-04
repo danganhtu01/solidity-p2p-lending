@@ -4,6 +4,7 @@ pragma solidity ^0.8.19;
 import {Test, console} from "forge-std/Test.sol";
 import {LendingPool} from "../src/LendingPool.sol";
 import {LoanManager} from "../src/LoanManager.sol";
+import {VNDStablecoin} from "../src/VNDStablecoin.sol";
 import {aToken} from "../src/aToken.sol";
 import {StableDebtToken} from "../src/StableDebtToken.sol";
 import {VariableDebtToken} from "../src/VariableDebtToken.sol";
@@ -11,11 +12,13 @@ import {InterestRateModel} from "../src/InterestRateModel.sol";
 import {MockPriceOracle} from "../src/MockPriceOracle.sol";
 import {ProtocolFeeVault} from "../src/ProtocolFeeVault.sol";
 
-/// @title LendingPool test suite (post-fix)
-/// @notice Covers the full lifecycle now that the known bugs are fixed: repay works and credits
-///         lender yield, liquidation requires repaying the debt, and setters are access-controlled.
+/// @title LendingPool test suite (VND-stablecoin version)
+/// @notice The loan asset is VNDD: lenders supply VNDD, borrowers lock ETH collateral and borrow VNDD,
+///         repay/liquidate in VNDD. Covers the full lifecycle plus the now-reachable
+///         under-collateralization liquidation that the old single-asset ETH design could not trip.
 contract LendingPoolTest is Test {
     LendingPool internal pool;
+    VNDStablecoin internal vnd;
     aToken internal atoken;
     StableDebtToken internal sdt;
     VariableDebtToken internal vdt;
@@ -27,18 +30,22 @@ contract LendingPoolTest is Test {
     address internal borrower = makeAddr("borrower");
     address internal liquidator = makeAddr("liquidator");
 
-    uint256 internal constant START_PRICE = 2000e18; // $2000 / ETH, scaled 1e18
+    uint256 internal constant START_PRICE = 70_000_000e18; // 70,000,000 VND / ETH, scaled 1e18
+    uint256 internal constant LEND = 1_000_000_000e18; // 1,000,000,000 VND of lender liquidity
+    uint256 internal constant BORROW = 30_000_000e18; //    30,000,000 VND borrowed
+    uint256 internal constant COLLAT = 1 ether; // collateral worth 70,000,000 VND (~233% of debt)
 
     function setUp() public {
+        vnd = new VNDStablecoin(address(this)); // this test contract is the owner/minter
         oracle = new MockPriceOracle(START_PRICE);
-        atoken = new aToken(address(this)); // this test contract is the owner
+        atoken = new aToken(address(this));
         sdt = new StableDebtToken(address(this));
         vdt = new VariableDebtToken(address(this));
         irm = new InterestRateModel();
-        vault = new ProtocolFeeVault();
+        vault = new ProtocolFeeVault(address(vnd));
 
         pool = new LendingPool(
-            address(oracle), address(atoken), address(sdt), address(vdt), address(irm), payable(address(vault))
+            address(vnd), address(oracle), address(atoken), address(sdt), address(vdt), address(irm), address(vault)
         );
 
         atoken.setPool(address(pool));
@@ -48,10 +55,16 @@ contract LendingPoolTest is Test {
 
     // --- helpers ---------------------------------------------------------
 
+    function _giveVnd(address to, uint256 amount) internal {
+        vnd.mint(to, amount);
+    }
+
     function _depositAsLender(uint256 amount) internal {
-        vm.deal(lender, amount);
-        vm.prank(lender);
-        pool.deposit{value: amount}();
+        _giveVnd(lender, amount);
+        vm.startPrank(lender);
+        vnd.approve(address(pool), amount);
+        pool.deposit(amount);
+        vm.stopPrank();
     }
 
     function _borrowVariable(uint256 amount, uint256 collateral, uint256 daysDur) internal {
@@ -60,123 +73,184 @@ contract LendingPoolTest is Test {
         pool.borrow{value: collateral}(amount, LoanManager.RateMode.Variable, daysDur);
     }
 
+    // --- VND stablecoin --------------------------------------------------
+
+    function test_Faucet_MintsVnd() public {
+        vm.prank(borrower);
+        vnd.faucet();
+        assertEq(vnd.balanceOf(borrower), vnd.FAUCET_AMOUNT(), "faucet mints the fixed amount");
+    }
+
+    function test_OnlyOwner_CanMintVnd() public {
+        vm.prank(borrower); // not the owner
+        vm.expectRevert(); // OZ Ownable: OwnableUnauthorizedAccount
+        vnd.mint(borrower, 1e18);
+    }
+
     // --- lender side -----------------------------------------------------
 
     function test_Deposit_MintsAToken() public {
-        _depositAsLender(5 ether);
-        assertEq(atoken.balanceOf(lender), 5 ether, "aToken minted 1:1 at start");
-        assertEq(address(pool).balance, 5 ether, "pool holds the ETH");
+        _depositAsLender(LEND);
+        assertEq(atoken.balanceOf(lender), LEND, "aToken minted 1:1 at start");
+        assertEq(vnd.balanceOf(address(pool)), LEND, "pool holds the VNDD");
     }
 
-    function test_Withdraw_ReturnsEth() public {
-        _depositAsLender(5 ether);
+    function test_Deposit_RequiresApproval() public {
+        _giveVnd(lender, LEND);
+        vm.prank(lender); // no approve()
+        vm.expectRevert(); // OZ ERC20: ERC20InsufficientAllowance
+        pool.deposit(LEND);
+    }
+
+    function test_Withdraw_ReturnsVnd() public {
+        _depositAsLender(LEND);
         vm.prank(lender);
-        pool.withdraw(5 ether);
-        assertEq(lender.balance, 5 ether, "lender got ETH back");
+        pool.withdraw(LEND);
+        assertEq(vnd.balanceOf(lender), LEND, "lender got VNDD back");
         assertEq(atoken.balanceOf(lender), 0, "aToken burned");
     }
 
     // --- borrower side ---------------------------------------------------
 
-    function test_Borrow_Variable_MintsDebtAndSendsEth() public {
-        _depositAsLender(5 ether);
-        _borrowVariable(1 ether, 2 ether, 30);
+    function test_Borrow_Variable_MintsDebtAndSendsVnd() public {
+        _depositAsLender(LEND);
+        _borrowVariable(BORROW, COLLAT, 30);
 
-        assertEq(vdt.balanceOf(borrower), 1 ether, "variable debt token minted");
+        assertEq(vdt.balanceOf(borrower), BORROW, "variable debt token minted");
         assertEq(pool.getLoanCount(borrower), 1, "one loan recorded");
-        assertEq(pool.totalOutstandingDebt(), 1 ether, "pool-wide debt tracked");
-        assertEq(borrower.balance, 1 ether, "borrower received the borrowed ETH");
+        assertEq(pool.totalOutstandingDebt(), BORROW, "pool-wide debt tracked");
+        assertEq(vnd.balanceOf(borrower), BORROW, "borrower received the borrowed VNDD");
+        assertEq(address(pool).balance, COLLAT, "pool holds the ETH collateral");
     }
 
     function test_Borrow_RevertsWhenCollateralTooLow() public {
-        _depositAsLender(5 ether);
+        _depositAsLender(LEND);
         vm.deal(borrower, 1 ether);
         vm.prank(borrower);
         vm.expectRevert("Not enough collateral");
-        pool.borrow{value: 1e14}(1 ether, LoanManager.RateMode.Variable, 30); // far below 200%
+        pool.borrow{value: 0.1 ether}(BORROW, LoanManager.RateMode.Variable, 30); // 7M VND < 60M needed
     }
 
     function test_Borrow_RevertsOnBadDuration() public {
-        vm.deal(borrower, 5 ether);
+        _depositAsLender(LEND);
+        vm.deal(borrower, COLLAT);
         vm.prank(borrower);
         vm.expectRevert("Loan duration must be 3-180 days");
-        pool.borrow{value: 2 ether}(1 ether, LoanManager.RateMode.Variable, 1);
+        pool.borrow{value: COLLAT}(BORROW, LoanManager.RateMode.Variable, 1);
     }
 
-    // --- repay (FIXED: was always reverting) ----------------------------
+    function test_Borrow_RevertsWhenNoLiquidity() public {
+        // no lender deposit => pool has no VNDD to lend
+        vm.deal(borrower, COLLAT);
+        vm.prank(borrower);
+        vm.expectRevert("No liquidity");
+        pool.borrow{value: COLLAT}(BORROW, LoanManager.RateMode.Variable, 30);
+    }
 
-    function test_Repay_BurnsDebtAndReturnsCollateral() public {
-        _depositAsLender(5 ether);
-        _borrowVariable(1 ether, 2 ether, 30);
+    // --- repay -----------------------------------------------------------
+
+    function test_Repay_BurnsDebtAndCreditsYield() public {
+        _depositAsLender(LEND);
+        _borrowVariable(BORROW, COLLAT, 30);
 
         vm.warp(block.timestamp + 15 days); // accrue some interest
 
-        vm.deal(borrower, 2 ether); // top up to cover principal + interest
+        _giveVnd(borrower, 1_000_000e18); // top up so borrower can cover principal + interest
         uint256 indexBefore = atoken.getLiquidityIndex();
 
-        vm.prank(borrower);
-        pool.repayLoan{value: 1.05 ether}(0);
+        vm.startPrank(borrower);
+        vnd.approve(address(pool), type(uint256).max);
+        pool.repayLoan(0);
+        vm.stopPrank();
 
         (,,, bool isRepaid,,,,) = pool.getUserLoan(borrower, 0);
         assertTrue(isRepaid, "loan marked repaid");
         assertEq(vdt.balanceOf(borrower), 0, "debt token burned");
         assertEq(pool.totalOutstandingDebt(), 0, "pool debt cleared");
-        assertGt(vault.getBalance(), 0, "protocol fee captured");
+        assertGt(vault.getBalance(), 0, "protocol fee captured (in VNDD)");
         assertGt(atoken.getLiquidityIndex(), indexBefore, "lenders earned real yield via the index");
+        assertEq(borrower.balance, COLLAT, "ETH collateral returned");
     }
 
-    function test_Repay_RefundsOverpayment() public {
-        _depositAsLender(5 ether);
-        _borrowVariable(1 ether, 2 ether, 30);
+    function test_Repay_ExactPull_NoOverpayment() public {
+        _depositAsLender(LEND);
+        _borrowVariable(BORROW, COLLAT, 30);
 
-        // repay immediately => interest ~ 0, owed ~ 1 ETH principal
-        vm.deal(borrower, 5 ether);
-        vm.prank(borrower);
-        pool.repayLoan{value: 3 ether}(0); // big overpay
+        // Repay immediately => interest ~ 0, owed ~ principal. The pool pulls EXACTLY what is owed.
+        vm.startPrank(borrower);
+        vnd.approve(address(pool), type(uint256).max); // approve more than owed on purpose
+        pool.repayLoan(0);
+        vm.stopPrank();
 
-        // principal (1) stays in the pool; collateral (2) + overpayment (2) come back => 5 - 3 + 2 + 2 = 6
-        assertEq(borrower.balance, 6 ether, "overpayment refunded, only principal retained");
+        assertEq(vnd.balanceOf(borrower), 0, "only the principal was pulled (no overpayment)");
+        assertEq(vnd.balanceOf(address(pool)), LEND, "pool liquidity restored to the seeded amount");
+        assertEq(borrower.balance, COLLAT, "collateral returned");
     }
 
-    // --- liquidation (FIXED: liquidator must repay the debt) -------------
+    // --- liquidation -----------------------------------------------------
 
     function test_Liquidate_WhenOverdue() public {
-        _depositAsLender(5 ether);
-        _borrowVariable(1 ether, 2 ether, 30); // 2x collateral, healthy until overdue
+        _depositAsLender(LEND);
+        _borrowVariable(BORROW, COLLAT, 30); // healthy until overdue
 
         vm.warp(block.timestamp + 31 days); // now overdue
 
-        vm.deal(liquidator, 1 ether);
-        uint256 before = liquidator.balance;
-        vm.prank(liquidator);
-        pool.liquidate{value: 1 ether}(borrower, 0); // repay 1 principal, seize 2 collateral
+        _giveVnd(liquidator, BORROW);
+        uint256 ethBefore = liquidator.balance;
+        vm.startPrank(liquidator);
+        vnd.approve(address(pool), BORROW);
+        pool.liquidate(borrower, 0); // repay 30M VND, seize 1 ETH collateral
+        vm.stopPrank();
 
-        assertEq(liquidator.balance, before + 1 ether, "profit = collateral(2) - principal(1)");
+        assertEq(liquidator.balance, ethBefore + COLLAT, "liquidator seized the ETH collateral");
+        assertEq(vnd.balanceOf(liquidator), 0, "liquidator paid the VND principal");
         assertEq(vdt.balanceOf(borrower), 0, "borrower debt burned");
         assertEq(pool.totalOutstandingDebt(), 0, "pool debt cleared");
         (,,,, bool isLiquidated,,,) = pool.getUserLoan(borrower, 0);
         assertTrue(isLiquidated, "loan marked liquidated");
     }
 
-    function test_Liquidate_RevertsWithoutRepayingDebt() public {
-        _depositAsLender(5 ether);
-        _borrowVariable(1 ether, 2 ether, 30);
-        vm.warp(block.timestamp + 31 days);
+    /// @notice The headline improvement over the ETH/ETH design: a price drop alone can make a loan
+    ///         liquidatable, BEFORE it is overdue, because ETH collateral and VND debt no longer cancel.
+    function test_Liquidate_WhenUnderCollateralizedByPriceDrop() public {
+        _depositAsLender(LEND);
+        _borrowVariable(BORROW, COLLAT, 30); // 70M collateral vs 30M debt = 233%, healthy and not overdue
 
-        vm.deal(liquidator, 1 ether);
-        vm.prank(liquidator);
-        vm.expectRevert("Must repay debt to liquidate");
-        pool.liquidate{value: 0.5 ether}(borrower, 0); // less than the 1 ETH principal
+        // ETH crashes from 70,000,000 to 30,000,000 VND => collateral now 30M < 120% * 30M = 36M.
+        oracle.setEthPrice(30_000_000e18);
+
+        _giveVnd(liquidator, BORROW);
+        vm.startPrank(liquidator);
+        vnd.approve(address(pool), BORROW);
+        pool.liquidate(borrower, 0); // succeeds via under-collateralization, not overdue
+        vm.stopPrank();
+
+        (,,,, bool isLiquidated,,,) = pool.getUserLoan(borrower, 0);
+        assertTrue(isLiquidated, "under-collateralized loan was liquidated before its due date");
+        assertEq(vdt.balanceOf(borrower), 0, "debt burned");
     }
 
     function test_Liquidate_RevertsWhenHealthy() public {
-        _depositAsLender(5 ether);
-        _borrowVariable(1 ether, 2 ether, 30); // 2x collateral, not overdue
+        _depositAsLender(LEND);
+        _borrowVariable(BORROW, COLLAT, 30); // 233% collateral, not overdue, price unchanged
 
-        vm.deal(liquidator, 1 ether);
-        vm.prank(liquidator);
+        _giveVnd(liquidator, BORROW);
+        vm.startPrank(liquidator);
+        vnd.approve(address(pool), BORROW);
         vm.expectRevert("Not eligible for liquidation");
-        pool.liquidate{value: 1 ether}(borrower, 0);
+        pool.liquidate(borrower, 0);
+        vm.stopPrank();
+    }
+
+    function test_Liquidate_RevertsWithoutVndApproval() public {
+        _depositAsLender(LEND);
+        _borrowVariable(BORROW, COLLAT, 30);
+        vm.warp(block.timestamp + 31 days); // eligible (overdue)
+
+        _giveVnd(liquidator, BORROW);
+        vm.prank(liquidator); // no approve()
+        vm.expectRevert(); // OZ ERC20: ERC20InsufficientAllowance
+        pool.liquidate(borrower, 0);
     }
 
     // --- interest rate model (pure math) --------------------------------
@@ -191,8 +265,8 @@ contract LendingPoolTest is Test {
     // --- access control --------------------------------------------------
 
     function test_DebtToken_IsNonTransferable() public {
-        _depositAsLender(5 ether);
-        _borrowVariable(1 ether, 2 ether, 30);
+        _depositAsLender(LEND);
+        _borrowVariable(BORROW, COLLAT, 30);
 
         vm.prank(borrower);
         vm.expectRevert("DebtToken: non-transferable");
@@ -212,12 +286,12 @@ contract LendingPoolTest is Test {
     function test_OnlyOwner_CanSetOraclePrice() public {
         vm.prank(borrower); // not the owner
         vm.expectRevert(); // OZ Ownable: OwnableUnauthorizedAccount
-        oracle.setEthPrice(1500e18);
+        oracle.setEthPrice(50_000_000e18);
     }
 
     function test_Owner_CanSetOraclePrice() public {
-        oracle.setEthPrice(1500e18); // test contract is the owner
-        assertEq(oracle.getLatestEthPrice(), 1500e18);
+        oracle.setEthPrice(50_000_000e18); // test contract is the owner
+        assertEq(oracle.getLatestEthPrice(), 50_000_000e18);
     }
 
     receive() external payable {}

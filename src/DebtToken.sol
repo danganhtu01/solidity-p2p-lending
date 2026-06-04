@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title DebtToken – Đại diện khoản nợ người dùng sau khi vay
-/// @notice Mint khi user vay ETH, burn khi user trả ETH
+/// @notice Mint khi user vay VNDD, burn khi user trả VNDD
 contract DebtToken is ERC20, Ownable {
     address public pool;
 
@@ -17,7 +17,7 @@ contract DebtToken is ERC20, Ownable {
 
     /// @notice Khởi tạo DebtToken với tên và symbol
     constructor(address _initialOwner)
-        ERC20("Debt Token", "dETH")
+        ERC20("Debt Token", "dVND")
         Ownable(_initialOwner)
     {}
 
@@ -26,7 +26,7 @@ contract DebtToken is ERC20, Ownable {
         pool = _pool;
     }
 
-    /// @notice Mint DebtToken cho borrower khi họ vay ETH
+    /// @notice Mint DebtToken cho borrower khi họ vay VNDD
     function mint(address user, uint256 amount) external {
         require(msg.sender == pool, "Only pool can mint");
         _mint(user, amount);

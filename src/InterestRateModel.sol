@@ -20,8 +20,8 @@ contract InterestRateModel {
     uint256 public constant PROTOCOL_FEE = 5e15; // 0.5%
 
     /// @notice Tính lãi suất cho borrower theo mức sử dụng
-    /// @param totalLiquidity Tổng ETH trong pool
-    /// @param totalDebt Tổng số ETH đang được vay
+    /// @param totalLiquidity Tổng VNDD khả dụng trong pool
+    /// @param totalDebt Tổng số VNDD đang được vay
     /// @return interestRate Tổng lãi suất borrower phải trả (scaled 1e18)
     function getInterestRate(
         uint256 totalLiquidity,
