@@ -299,7 +299,10 @@ const ORACLE_ABI = [
 /* ============================================================================
    3. STATE
    ========================================================================== */
-const readProvider = new ethers.JsonRpcProvider(SEPOLIA.rpcUrls[0]);
+// batchMaxCount:1 disables ethers' default JSON-RPC batching — some public RPCs (e.g. drpc.org)
+// return HTTP 500 on batch requests, which would silently blank the dashboard. staticNetwork skips
+// a redundant chainId probe on every call.
+const readProvider = new ethers.JsonRpcProvider(SEPOLIA.rpcUrls[0], undefined, { batchMaxCount: 1, staticNetwork: true });
 let provider, signer, account;          // set after wallet connect
 let pool, vnd, atoken, oracle;          // contracts bound to the SIGNER
 let vndAddr, atokenAddr, oracleAddr;    // discovered from the pool
