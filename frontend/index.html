@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VND P2P Lending — Sepolia dApp</title>
+
+<!--
+  ============================================================================
+  SINGLE-FILE FRONTEND for the VND-stablecoin P2Plending protocol (LendingPool.sol)
+  ----------------------------------------------------------------------------
+  THE PROTOCOL IN ONE LINE: lenders supply VNDS (a VND-pegged stablecoin),
+  borrowers lock ETH collateral and borrow VNDS, everyone repays in VNDS.
+
+  HOW A dApp FRONTEND WORKS (the whole idea in 4 lines):
+    1. A wallet (MetaMask) injects `window.ethereum` into the page.
+    2. ethers.js wraps that into a Provider (reads) + Signer (who pays gas).
+    3. new ethers.Contract(address, ABI, signer) gives you a JS object whose
+       methods ARE the Solidity functions.
+    4. view/pure calls return data for free; state-changing calls return a
+       pending transaction you must `await tx.wait()` on (and the user signs).
+
+  ERC-20 GOTCHA: VNDS is a token, so the pool must be allowed to pull it.
+  deposit / repay / liquidate therefore first send an `approve(pool, amount)`
+  if the current allowance is too low, THEN the actual call.
+
+  RUN IT LOCALLY:  python -m http.server 8000  ->  http://localhost:8000
+  HOSTED:          GitHub Pages (see the repo's Pages workflow).
+  ============================================================================
+-->
+
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --border:#2a313c;
+    --text:#e6edf3; --muted:#8b949e; --accent:#3b82f6; --accent2:#22c55e;
+    --warn:#f59e0b; --danger:#ef4444; --vnd:#d4af37; --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    padding:24px;max-width:1100px;margin:0 auto;
+  }
+  h1{font-size:22px;margin:0}
+  h2{font-size:15px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 14px}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:8px}
+  .sub{color:var(--muted);font-size:13px;margin:2px 0 18px}
+  .pill{display:inline-flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--border);
+        border-radius:999px;padding:6px 14px;font-size:13px;font-family:ui-monospace,monospace}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--danger)}
+  .dot.ok{background:var(--accent2)}
+  button{
+    background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 16px;
+    font-size:14px;font-weight:600;cursor:pointer;transition:filter .15s}
+  button:hover{filter:brightness(1.1)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.ghost{background:var(--panel2);border:1px solid var(--border)}
+  button.green{background:var(--accent2)}
+  button.warn{background:var(--warn);color:#1a1a1a}
+  button.red{background:var(--danger)}
+  button.gold{background:var(--vnd);color:#1a1a1a}
+  input,select{
+    width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);
+    border-radius:10px;padding:10px 12px;font-size:14px;margin:4px 0 2px;font-family:inherit}
+  label{font-size:12px;color:var(--muted);display:block;margin-top:10px}
+  .grid{display:grid;gap:16px}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(165px,1fr));margin-bottom:20px}
+  .cols2{grid-template-columns:1fr 1fr}
+  @media(max-width:760px){.cols2{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .card .v{font-size:20px;font-weight:700;margin-top:6px;font-family:ui-monospace,monospace;word-break:break-all}
+  .card .u{font-size:12px;color:var(--muted)}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px;min-height:16px}
+  .row{display:flex;gap:10px;margin-top:14px}
+  .row button{flex:1}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--border);font-family:ui-monospace,monospace}
+  th{color:var(--muted);font-weight:600;text-transform:uppercase;font-size:11px;letter-spacing:.05em}
+  .tag{font-size:11px;padding:2px 8px;border-radius:999px;font-family:system-ui}
+  .tag.active{background:rgba(34,197,94,.15);color:#4ade80}
+  .tag.overdue{background:rgba(245,158,11,.15);color:#fbbf24}
+  .tag.done{background:rgba(139,148,158,.15);color:var(--muted)}
+  .tag.liq{background:rgba(239,68,68,.15);color:#f87171}
+  #status{padding:11px 16px;border-radius:10px;background:var(--panel2);border:1px solid var(--border);
+          margin-bottom:18px;font-size:13px;min-height:20px}
+  #log{font-family:ui-monospace,monospace;font-size:12px;max-height:230px;overflow:auto}
+  #log .e{padding:6px 0;border-bottom:1px solid var(--border)}
+  .full{grid-column:1/-1}
+  footer{margin-top:26px;font-size:12px;color:var(--muted);line-height:1.9}
+  code{background:var(--panel2);padding:1px 6px;border-radius:6px;font-size:12px}
+  .note{background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);border-radius:10px;
+        padding:10px 12px;font-size:12px;color:#9cc2ff;margin-top:12px}
+  .note.gold{background:rgba(212,175,55,.08);border-color:rgba(212,175,55,.35);color:#e8cf8a}
+  .banner{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.4);border-radius:10px;
+          padding:12px 16px;font-size:13px;color:#f8b4b4;margin-bottom:16px;display:none}
+  .cfg{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+  .cfg .grow{flex:1;min-width:280px}
+</style>
+</head>
+
+<body>
+<header>
+  <div>
+    <h1>🏦 VND P2P Lending <span style="color:var(--muted);font-weight:400">· Sepolia</span></h1>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span class="pill"><span id="netDot" class="dot"></span><span id="netLabel">Not connected</span></span>
+    <span id="acctPill" class="pill" style="display:none"></span>
+    <button id="connectBtn">Connect Wallet</button>
+  </div>
+</header>
+<p class="sub">Supply <b>VNDS</b> (a VND-pegged stablecoin) to earn yield, or lock <b>ETH</b> collateral to borrow VNDS. A learning dApp on the Sepolia testnet — test funds only.</p>
+
+<div id="cfgBanner" class="banner"></div>
+
+<div id="status" aria-live="polite">Loading on-chain data…</div>
+
+<!-- ───────── DASHBOARD CARDS (live reads, no wallet needed) ───────── -->
+<div class="grid cards">
+  <div class="card"><div class="k">ETH price (oracle)</div><div class="v" id="cPrice">—</div><div class="u">VND per ETH</div></div>
+  <div class="card"><div class="k">Pool liquidity</div><div class="v" id="cLiquidity">—</div><div class="u">VNDS available to borrow</div></div>
+  <div class="card"><div class="k">Liquidity index</div><div class="v" id="cIndex">—</div><div class="u">aVND RAY index (1.0 = start)</div></div>
+  <div class="card"><div class="k">My VNDS wallet</div><div class="v" id="cWallet">—</div><div class="u">spendable VNDS</div></div>
+  <div class="card"><div class="k">My aVND balance</div><div class="v" id="cBal">—</div><div class="u">scaled deposit token</div></div>
+  <div class="card"><div class="k">My redeemable VNDS</div><div class="v" id="cRedeem">—</div><div class="u">principal + accrued yield</div></div>
+</div>
+
+<!-- ───────── FAUCET ───────── -->
+<div class="panel" style="margin-bottom:16px">
+  <h2>🚰 Get test VNDS</h2>
+  <div class="cols2 grid" style="align-items:center">
+    <p class="hint" style="margin:0">VNDS is the loan currency. Mint yourself <b>100,000,000 VND</b> of test VNDS to lend or to repay a loan. (You still need Sepolia ETH from a faucet for gas + collateral.)</p>
+    <div class="row" style="margin:0"><button id="faucetBtn" class="gold" disabled>Mint 100,000,000 test VNDS</button></div>
+  </div>
+</div>
+
+<!-- ───────── LENDER + BORROWER PANELS ───────── -->
+<div class="grid cols2">
+
+  <!-- LENDER -->
+  <div class="panel">
+    <h2>💰 Lender</h2>
+    <label>Deposit VNDS (earns interest from borrowers)</label>
+    <input id="depositAmt" type="number" min="0" step="1" placeholder="1000000" />
+    <div class="hint" id="depositHint">Approves the pool to pull your VNDS, then deposits.</div>
+    <div class="row"><button id="depositBtn" class="green" disabled>Approve & Deposit</button></div>
+
+    <label style="margin-top:20px">Withdraw — amount of aVND to redeem</label>
+    <input id="withdrawAmt" type="number" min="0" step="1" placeholder="1000000" />
+    <div class="hint">You receive <code>aVND × liquidityIndex</code> in VNDS.</div>
+    <div class="row"><button id="withdrawBtn" class="ghost" disabled>Withdraw</button></div>
+  </div>
+
+  <!-- BORROWER -->
+  <div class="panel">
+    <h2>🏗️ Borrower</h2>
+    <label>Borrow amount (VNDS)</label>
+    <input id="borrowAmt" type="number" min="0" step="1" placeholder="30000000" />
+
+    <label>Rate mode</label>
+    <select id="borrowMode">
+      <option value="0">Stable — fixed 6% APR</option>
+      <option value="1">Variable — utilization curve</option>
+    </select>
+
+    <label>Duration (days, 3–180)</label>
+    <input id="borrowDays" type="number" min="3" max="180" step="1" placeholder="30" />
+
+    <label>Collateral to lock (ETH, sent with the tx)</label>
+    <input id="borrowCollat" type="number" min="0" step="0.001" placeholder="1" />
+    <div class="hint" id="borrowHint">Enter a borrow amount to see the minimum ETH collateral (200%).</div>
+    <div class="row"><button id="borrowBtn" class="green" disabled>Borrow VNDS</button></div>
+  </div>
+</div>
+
+<!-- ───────── MY LOANS ───────── -->
+<div class="panel" style="margin-top:16px">
+  <h2>📋 My Loans</h2>
+  <div style="overflow-x:auto">
+    <table id="loansTable">
+      <thead><tr>
+        <th>#</th><th>Borrowed (VND)</th><th>Collateral (ETH)</th><th>Rate</th><th>Mode</th><th>Due</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody id="loansBody"><tr><td colspan="8" style="color:var(--muted)">Connect your wallet to see your loans.</td></tr></tbody>
+    </table>
+  </div>
+  <div class="note">Repay <b>approves</b> the pool for principal + interest (+ late penalty) in VNDS, then calls <code>repayLoan</code>. The contract pulls the <b>exact</b> amount owed (no overpayment), and returns your ETH collateral.</div>
+</div>
+
+<!-- ───────── LIQUIDATE + TESTING TOOLS ───────── -->
+<div class="grid cols2" style="margin-top:16px">
+  <div class="panel">
+    <h2>🧨 Liquidate</h2>
+    <p class="hint">Anyone may liquidate a loan that is overdue OR under-collateralised (ETH collateral worth &lt; 120% of the VND debt). You repay the VND principal and seize the ETH collateral.</p>
+    <label>Borrower address</label>
+    <input id="liqBorrower" placeholder="0x…" />
+    <label>Loan index</label>
+    <input id="liqIndex" type="number" min="0" step="1" placeholder="0" />
+    <div class="row"><button id="liqBtn" class="red" disabled>Approve & Liquidate</button></div>
+  </div>
+
+  <div class="panel">
+    <h2>🧪 Testing tools</h2>
+    <p class="hint">The <b>MockPriceOracle</b> is owner-only. If you deployed it, lower the ETH price to push a healthy loan under-water and test under-collateralised liquidation.</p>
+    <label>Set ETH price (VND per ETH)</label>
+    <input id="priceInput" type="number" min="0" step="1" placeholder="70000000" />
+    <div class="row"><button id="setPriceBtn" class="warn" disabled>Set mock price</button></div>
+    <div class="note">Need Sepolia ETH for gas? Try <a href="https://sepoliafaucet.com" target="_blank" rel="noopener">sepoliafaucet.com</a> or the <a href="https://sepolia-faucet.pk910.de" target="_blank" rel="noopener">PoW faucet</a>.</div>
+  </div>
+</div>
+
+<!-- ───────── ACTIVITY LOG ───────── -->
+<div class="panel" style="margin-top:16px">
+  <h2>📡 Activity</h2>
+  <div id="log"><div class="e" style="color:var(--muted)">Transactions and on-chain events appear here.</div></div>
+</div>
+
+<!-- ───────── CONTRACT SETTINGS (pool address override) ───────── -->
+<div class="panel" style="margin-top:16px">
+  <h2>⚙️ Contract</h2>
+  <div class="cfg">
+    <div class="grow">
+      <label>LendingPool address (everything else is discovered from it)</label>
+      <input id="poolAddrInput" placeholder="0x…" />
+    </div>
+    <div><button id="savePoolBtn" class="ghost">Save & reload</button></div>
+  </div>
+  <p class="hint">Overrides the built-in address and is remembered in this browser — handy after a redeploy.</p>
+</div>
+
+<footer>
+  <b>Deployed contracts (Sepolia · chainId 11155111):</b><br>
+  LendingPool <a id="fPool" target="_blank" rel="noopener"></a> · VNDS <a id="fVnd" target="_blank" rel="noopener"></a> · aVND <a id="fAtoken" target="_blank" rel="noopener"></a> · Oracle <a id="fOracle" target="_blank" rel="noopener"></a><br>
+  Only the LendingPool address is configured; VNDS, aVND and the oracle are discovered at runtime via <code>pool.vnd()</code> / <code>pool.atoken()</code> / <code>pool.oracle()</code>.
+</footer>
+
+<!-- ethers.js v6 (UMD build exposes a global `ethers`) -->
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+/* ============================================================================
+   1. CONFIG  — the ONE address you must trust, plus the network definition
+   ========================================================================== */
+// Filled in after the Sepolia deploy. Can be overridden at runtime in the
+// "Contract" panel (stored in localStorage), which is handy after a redeploy.
+const DEFAULT_LENDING_POOL = "0x0000000000000000000000000000000000000000";
+const LENDING_POOL = (localStorage.getItem("vndp2p.pool") || DEFAULT_LENDING_POOL).trim();
+
+const SEPOLIA = {
+  chainId: "0xaa36a7",                     // 11155111 in hex
+  chainName: "Sepolia",
+  nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
+  blockExplorerUrls: ["https://sepolia.etherscan.io"],
+};
+const EXPLORER = SEPOLIA.blockExplorerUrls[0];
+
+/* ============================================================================
+   2. ABIs  — "human-readable" form: just the function signatures we use.
+   ========================================================================== */
+const POOL_ABI = [
+  "function deposit(uint256 amount)",
+  "function withdraw(uint256 _amount)",
+  "function borrow(uint256 _amount, uint8 _rateMode, uint256 _days) payable",
+  "function repayLoan(uint256 index)",
+  "function liquidate(address borrower, uint256 index)",
+  "function getLoanCount(address user) view returns (uint256)",
+  "function getUserLoan(address user, uint256 index) view returns (uint256 amountBorrowed, uint256 collateralAmount, uint256 dueDate, bool isRepaid, bool isLiquidated, uint256 interestRate, uint8 rateMode, uint256 durationDays)",
+  "function availableLiquidity() view returns (uint256)",
+  "function totalOutstandingDebt() view returns (uint256)",
+  "function vnd() view returns (address)",
+  "function atoken() view returns (address)",
+  "function oracle() view returns (address)",
+  "function COLLATERAL_RATIO() view returns (uint256)",
+  "function LATE_PENALTY_PER_DAY() view returns (uint256)",
+  "event LoanLiquidated(address indexed borrower, uint256 indexed loanIndex, address indexed liquidator, uint256 collateralSeized, uint256 debtRepaid)",
+];
+const VND_ABI = [
+  "function balanceOf(address) view returns (uint256)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function faucet()",
+  "function FAUCET_AMOUNT() view returns (uint256)",
+  "function symbol() view returns (string)",
+];
+const ATOKEN_ABI = [
+  "function balanceOf(address) view returns (uint256)",
+  "function previewWithdraw(address) view returns (uint256)",
+  "function getLiquidityIndex() view returns (uint256)",
+];
+const ORACLE_ABI = [
+  "function getLatestEthPrice() view returns (uint256)",
+  "function setEthPrice(uint256 _newPrice)",
+];
+
+/* ============================================================================
+   3. STATE
+   ========================================================================== */
+const readProvider = new ethers.JsonRpcProvider(SEPOLIA.rpcUrls[0]);
+let provider, signer, account;          // set after wallet connect
+let pool, vnd, atoken, oracle;          // contracts bound to the SIGNER
+let vndAddr, atokenAddr, oracleAddr;    // discovered from the pool
+
+const YEAR = 365n * 86400n, DAY = 86400n, E18 = 10n ** 18n, RAY = 10n ** 27n;
+const $ = (id) => document.getElementById(id);
+const ZERO = "0x0000000000000000000000000000000000000000";
+
+/* ============================================================================
+   4. SMALL HELPERS  (formatting + status + activity log)
+   ========================================================================== */
+// VNDS / VND amounts are 18-decimals; show as grouped integers with a ₫ suffix.
+const vndFmt = (x) => "₫" + Number(ethers.formatEther(x)).toLocaleString(undefined,{maximumFractionDigits:0});
+const eth    = (wei) => Number(ethers.formatEther(wei)).toLocaleString(undefined,{maximumFractionDigits:6});
+const pct    = (x)   => (Number(ethers.formatEther(x)) * 100).toFixed(2) + "%";
+
+function status(msg, kind){
+  const el = $("status");
+  el.textContent = msg;
+  el.style.borderColor = kind==="err" ? "var(--danger)" : kind==="ok" ? "var(--accent2)" : "var(--border)";
+}
+function logLine(html){
+  const log = $("log");
+  if(log.firstChild && log.firstChild.style && log.firstChild.style.color) log.innerHTML = "";
+  const d = document.createElement("div");
+  d.className = "e"; d.innerHTML = html;
+  log.prepend(d);
+}
+const txLink = (h) => `<a href="${EXPLORER}/tx/${h}" target="_blank" rel="noopener">${h.slice(0,10)}…${h.slice(-6)}</a>`;
+const addrLink = (a) => `<a href="${EXPLORER}/address/${a}" target="_blank" rel="noopener">${a.slice(0,8)}…${a.slice(-4)}</a>`;
+
+// Read a VND input as an 18-decimals BigInt (whole-VND, no fractions expected).
+function vndWei(id){
+  const v = $(id).value.trim();
+  if(!v || isNaN(v) || Number(v) <= 0) throw new Error("Enter a valid positive amount.");
+  return ethers.parseUnits(v, 18);
+}
+// Read an ETH input as wei (BigInt).
+function ethWei(id){
+  const v = $(id).value.trim();
+  if(!v || isNaN(v) || Number(v) <= 0) throw new Error("Enter a valid positive amount.");
+  return ethers.parseEther(v);
+}
+
+// Ensure the pool is approved to pull `amount` VNDS from the user; sends approve if not.
+async function ensureAllowance(amount){
+  const current = await vnd.allowance(account, LENDING_POOL);
+  if(current >= amount) return;
+  status("Approve VNDS in MetaMask…");
+  logLine(`⏳ <b>Approve VNDS</b> for the pool…`);
+  const tx = await vnd.approve(LENDING_POOL, amount);
+  await tx.wait();
+  logLine(`✅ <b>Approve</b> confirmed · ${txLink(tx.hash)}`);
+}
+
+// Wrap any write: submit -> log hash -> wait -> refresh. Central error handling.
+async function send(label, fn){
+  try{
+    status(`${label}: confirm in MetaMask…`);
+    const tx = await fn();
+    logLine(`⏳ <b>${label}</b> submitted · ${txLink(tx.hash)}`);
+    status(`${label}: mining…`);
+    const rcpt = await tx.wait();
+    logLine(`✅ <b>${label}</b> confirmed in block ${rcpt.blockNumber} · ${txLink(tx.hash)}`);
+    status(`${label} confirmed ✓`, "ok");
+    await refreshAll();
+  }catch(e){
+    const msg = e.shortMessage || e.reason || e.message || String(e);
+    logLine(`❌ <b>${label}</b> failed: ${msg}`);
+    status(`${label} failed: ${msg}`, "err");
+  }
+}
+
+/* ============================================================================
+   5. CONNECT WALLET + ensure correct network
+   ========================================================================== */
+async function connect(){
+  if(!window.ethereum){
+    status("No wallet found. Install MetaMask, then reload.", "err");
+    window.open("https://metamask.io/download/","_blank");
+    return;
+  }
+  if(!ethers.isAddress(LENDING_POOL) || LENDING_POOL === ZERO){
+    status("No LendingPool address configured yet — set it in the Contract panel below.", "err");
+    return;
+  }
+  try{
+    await ensureSepolia();
+    provider = new ethers.BrowserProvider(window.ethereum);
+    await provider.send("eth_requestAccounts", []);
+    signer  = await provider.getSigner();
+    account = await signer.getAddress();
+
+    // Bind the pool to the signer, then DISCOVER the other contracts from it.
+    pool       = new ethers.Contract(LENDING_POOL, POOL_ABI, signer);
+    vndAddr    = await pool.vnd();
+    atokenAddr = await pool.atoken();
+    oracleAddr = await pool.oracle();
+    vnd        = new ethers.Contract(vndAddr, VND_ABI, signer);
+    atoken     = new ethers.Contract(atokenAddr, ATOKEN_ABI, signer);
+    oracle     = new ethers.Contract(oracleAddr, ORACLE_ABI, signer);
+
+    $("netDot").classList.add("ok");
+    $("netLabel").textContent = "Sepolia";
+    $("acctPill").style.display = "inline-flex";
+    $("acctPill").textContent = account.slice(0,6) + "…" + account.slice(-4);
+    $("connectBtn").textContent = "Connected";
+    document.querySelectorAll("button[disabled]").forEach(b => b.disabled = false);
+
+    setFooter();
+    subscribeEvents();
+    await refreshAll();
+    status("Connected ✓", "ok");
+
+    window.ethereum.on("accountsChanged", () => location.reload());
+    window.ethereum.on("chainChanged",   () => location.reload());
+  }catch(e){
+    status("Connect failed: " + (e.shortMessage || e.message), "err");
+  }
+}
+
+async function ensureSepolia(){
+  try{
+    await window.ethereum.request({ method:"wallet_switchEthereumChain", params:[{ chainId:SEPOLIA.chainId }] });
+  }catch(e){
+    if(e.code === 4902){ // chain not in wallet yet -> add it
+      await window.ethereum.request({ method:"wallet_addEthereumChain", params:[SEPOLIA] });
+    }else throw e;
+  }
+}
+
+/* ============================================================================
+   6. REFRESH  — read on-chain state into the UI
+   ========================================================================== */
+async function refreshDashboard(){
+  try{
+    const roPool   = new ethers.Contract(LENDING_POOL, POOL_ABI, readProvider);
+    const oAddr    = oracleAddr || await roPool.oracle();
+    const aAddr    = atokenAddr || await roPool.atoken();
+    const roOracle = new ethers.Contract(oAddr, ORACLE_ABI, readProvider);
+    const roAtoken = new ethers.Contract(aAddr, ATOKEN_ABI, readProvider);
+
+    const [price, liq, idx] = await Promise.all([
+      roOracle.getLatestEthPrice(),
+      roPool.availableLiquidity(),
+      roAtoken.getLiquidityIndex(),
+    ]);
+    $("cPrice").textContent     = vndFmt(price);
+    $("cLiquidity").textContent = vndFmt(liq);
+    $("cIndex").textContent     = Number(ethers.formatUnits(idx, 27)).toFixed(6);
+    updateBorrowHint(price);
+  }catch(e){ /* RPC hiccup or pool not set — leave dashes */ }
+}
+
+async function refreshMine(){
+  if(!account) return;
+  const [wallet, bal, redeem] = await Promise.all([
+    vnd.balanceOf(account),
+    atoken.balanceOf(account),
+    atoken.previewWithdraw(account),
+  ]);
+  $("cWallet").textContent = vndFmt(wallet);
+  $("cBal").textContent    = Number(ethers.formatEther(bal)).toLocaleString(undefined,{maximumFractionDigits:2}) + " aVND";
+  $("cRedeem").textContent = vndFmt(redeem);
+  await renderLoans();
+}
+async function refreshAll(){ await refreshDashboard(); await refreshMine(); }
+
+async function renderLoans(){
+  const body = $("loansBody");
+  const count = Number(await pool.getLoanCount(account));
+  if(count === 0){ body.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">No loans yet.</td></tr>`; return; }
+
+  const now = BigInt(Math.floor(Date.now()/1000));
+  let rows = "";
+  for(let i=0;i<count;i++){
+    const L = await pool.getUserLoan(account, i);
+    const overdue = !L.isRepaid && !L.isLiquidated && now > L.dueDate;
+    let tag = L.isLiquidated ? `<span class="tag liq">Liquidated</span>`
+            : L.isRepaid     ? `<span class="tag done">Repaid</span>`
+            : overdue        ? `<span class="tag overdue">Overdue</span>`
+            :                  `<span class="tag active">Active</span>`;
+    const due = new Date(Number(L.dueDate)*1000).toLocaleDateString();
+    const repayBtn = (!L.isRepaid && !L.isLiquidated)
+      ? `<button class="green" style="padding:6px 12px" onclick="repay(${i})">Repay</button>` : "";
+    rows += `<tr>
+      <td>${i}</td>
+      <td>${vndFmt(L.amountBorrowed)}</td>
+      <td>${eth(L.collateralAmount)}</td>
+      <td>${pct(L.interestRate)}</td>
+      <td>${L.rateMode===0n?"Stable":"Variable"}</td>
+      <td>${due}</td>
+      <td>${tag}</td>
+      <td>${repayBtn}</td>
+    </tr>`;
+  }
+  body.innerHTML = rows;
+}
+
+/* ============================================================================
+   7. ACTIONS  (each maps to a Solidity function; ERC-20 calls approve first)
+   ========================================================================== */
+$("faucetBtn").onclick = () => send("Faucet", () => vnd.faucet());
+
+$("depositBtn").onclick = async () => {
+  try{
+    const amount = vndWei("depositAmt");
+    await ensureAllowance(amount);
+    await send("Deposit", () => pool.deposit(amount));
+  }catch(e){ status("Deposit failed: " + (e.shortMessage||e.message), "err"); }
+};
+
+$("withdrawBtn").onclick = () =>
+  send("Withdraw", () => pool.withdraw(vndWei("withdrawAmt")));
+
+$("borrowBtn").onclick = () => {
+  const amount = vndWei("borrowAmt");
+  const mode   = Number($("borrowMode").value);          // 0 Stable / 1 Variable
+  const days   = parseInt($("borrowDays").value, 10);
+  if(!(days>=3 && days<=180)) return status("Duration must be 3–180 days.", "err");
+  const collat = ethWei("borrowCollat");
+  return send("Borrow", () => pool.borrow(amount, mode, days, { value: collat }));
+};
+
+// repay(i): compute total owed the SAME way the contract does, approve it (+buffer
+// for timing drift), then call repayLoan. The contract pulls the EXACT owed amount.
+window.repay = async function(i){
+  try{
+    const L   = await pool.getUserLoan(account, i);
+    const pen = await pool.LATE_PENALTY_PER_DAY();
+    const now = BigInt(Math.floor(Date.now()/1000));
+
+    const startTime  = L.dueDate - L.durationDays * DAY;
+    const baseDur    = L.durationDays * DAY;
+    let   actualDur  = now > L.dueDate ? baseDur : (now > startTime ? now - startTime : 0n);
+    let   interest   = (L.amountBorrowed * L.interestRate * actualDur) / (YEAR * E18);
+    let   owed       = L.amountBorrowed + interest;
+
+    if(now > L.dueDate){                                  // late penalty
+      const daysLate = (now - L.dueDate) / DAY;
+      owed += (L.amountBorrowed * pen * daysLate) / E18;
+    }
+    const approveAmt = owed + owed / 100n;                // +1% buffer for timing drift
+    logLine(`ℹ️ Repaying loan #${i}: owe ≈ ${vndFmt(owed)} VNDS`);
+    await ensureAllowance(approveAmt);
+    await send(`Repay #${i}`, () => pool.repayLoan(i));
+  }catch(e){
+    status("Repay failed: " + (e.shortMessage||e.message), "err");
+  }
+};
+
+$("liqBtn").onclick = async () => {
+  try{
+    const b = $("liqBorrower").value.trim();
+    const idx = parseInt($("liqIndex").value, 10);
+    if(!ethers.isAddress(b)) return status("Enter a valid borrower address.", "err");
+    const L = await pool.getUserLoan(b, idx);            // principal to repay
+    await ensureAllowance(L.amountBorrowed);
+    await send("Liquidate", () => pool.liquidate(b, idx));
+  }catch(e){ status("Liquidate failed: " + (e.shortMessage||e.message), "err"); }
+};
+
+$("setPriceBtn").onclick = () =>
+  send("Set price", () => oracle.setEthPrice(vndWei("priceInput"))); // VND/ETH, 18-dec scale
+
+/* ============================================================================
+   8. EVENTS  — live-update when ANY user's loan is liquidated
+   ========================================================================== */
+function subscribeEvents(){
+  try{
+    pool.on("LoanLiquidated", (borrower, loanIndex, liquidator, seized, debt) => {
+      logLine(`🧨 <b>Liquidation</b>: ${addrLink(borrower)} loan #${loanIndex} by ${addrLink(liquidator)} — seized ${eth(seized)} ETH for ${vndFmt(debt)} VNDS`);
+      refreshAll();
+    });
+  }catch(e){ /* some injected providers don't support filters; non-fatal */ }
+}
+
+/* ============================================================================
+   9. LIVE BORROW HINT  — minimum ETH collateral the contract will require
+   ========================================================================== */
+let lastPrice = 0n;
+function updateBorrowHint(price){ if(price) lastPrice = price; computeBorrowHint(); }
+function computeBorrowHint(){
+  const v = $("borrowAmt").value.trim();
+  const hint = $("borrowHint");
+  if(!v || isNaN(v) || Number(v)<=0 || !lastPrice){ hint.textContent = "Enter a borrow amount to see the minimum ETH collateral (200%)."; return; }
+  const amount = ethers.parseUnits(v, 18); // VND amount, 18-dec
+  // Contract requires: collateralEth * price / 1e18 * 100 >= amount * 200
+  //   => collateralEth >= amount * 200 * 1e18 / (100 * price) = amount * 2 * 1e18 / price
+  const minCollat = (amount * 200n * E18) / (100n * lastPrice);
+  hint.innerHTML = `Minimum collateral ≈ <b>${eth(minCollat)} ETH</b> at ${vndFmt(lastPrice)} / ETH (200% of the loan).`;
+}
+$("borrowAmt").addEventListener("input", computeBorrowHint);
+
+/* ============================================================================
+   10. FOOTER, CONTRACT SETTINGS + BOOT
+   ========================================================================== */
+function setFooter(){
+  const f=(id,a)=>{ const el=$(id); if(!a) return; el.href=`${EXPLORER}/address/${a}`; el.textContent=a.slice(0,8)+"…"+a.slice(-4); };
+  f("fPool", LENDING_POOL);
+  f("fVnd", vndAddr); f("fAtoken", atokenAddr); f("fOracle", oracleAddr);
+}
+
+$("connectBtn").onclick = connect;
+$("savePoolBtn").onclick = () => {
+  const v = $("poolAddrInput").value.trim();
+  if(!ethers.isAddress(v)) return status("Enter a valid contract address.", "err");
+  localStorage.setItem("vndp2p.pool", v);
+  location.reload();
+};
+
+// Boot: show config state + live data before any wallet is connected.
+(async () => {
+  $("poolAddrInput").value = (LENDING_POOL === ZERO) ? "" : LENDING_POOL;
+  if(!ethers.isAddress(LENDING_POOL) || LENDING_POOL === ZERO){
+    const b = $("cfgBanner");
+    b.style.display = "block";
+    b.innerHTML = "⚠️ No LendingPool address configured yet. Paste your deployed Sepolia address in the <b>Contract</b> panel at the bottom and click <b>Save & reload</b>.";
+    status("Waiting for a LendingPool address (see the Contract panel).");
+    return;
+  }
+  $("fPool").href = `${EXPLORER}/address/${LENDING_POOL}`;
+  $("fPool").textContent = LENDING_POOL.slice(0,8)+"…"+LENDING_POOL.slice(-4);
+  await refreshDashboard();
+  status("Read-only data loaded. Connect a wallet to lend, borrow, or repay.");
+})();
+</script>
+</body>
+</html>
