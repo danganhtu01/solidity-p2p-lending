@@ -11,10 +11,9 @@ import {InterestRateModel} from "../src/InterestRateModel.sol";
 import {MockPriceOracle} from "../src/MockPriceOracle.sol";
 import {ProtocolFeeVault} from "../src/ProtocolFeeVault.sol";
 
-/// @title LendingPool test suite
-/// @notice Demonstrates the full lender/borrower/liquidator lifecycle with Foundry cheatcodes
-///         (vm.deal, vm.prank, vm.warp, vm.expectRevert). Where the original contracts contain
-///         bugs, the test asserts the ACTUAL behavior and the comment flags it as a known issue.
+/// @title LendingPool test suite (post-fix)
+/// @notice Covers the full lifecycle now that the known bugs are fixed: repay works and credits
+///         lender yield, liquidation requires repaying the debt, and setters are access-controlled.
 contract LendingPoolTest is Test {
     LendingPool internal pool;
     aToken internal atoken;
@@ -42,7 +41,6 @@ contract LendingPoolTest is Test {
             address(oracle), address(atoken), address(sdt), address(vdt), address(irm), payable(address(vault))
         );
 
-        // Wire the tokens so only the pool can mint/burn them
         atoken.setPool(address(pool));
         sdt.setPool(address(pool));
         vdt.setPool(address(pool));
@@ -66,7 +64,6 @@ contract LendingPoolTest is Test {
 
     function test_Deposit_MintsAToken() public {
         _depositAsLender(5 ether);
-        // liquidityIndex starts at 1 RAY, so 1 ETH deposited == 1 aETH (scaled)
         assertEq(atoken.balanceOf(lender), 5 ether, "aToken minted 1:1 at start");
         assertEq(address(pool).balance, 5 ether, "pool holds the ETH");
     }
@@ -87,7 +84,7 @@ contract LendingPoolTest is Test {
 
         assertEq(vdt.balanceOf(borrower), 1 ether, "variable debt token minted");
         assertEq(pool.getLoanCount(borrower), 1, "one loan recorded");
-        // borrower posted 2 collateral, received 1 borrowed => net -1 from the 2 they funded
+        assertEq(pool.totalOutstandingDebt(), 1 ether, "pool-wide debt tracked");
         assertEq(borrower.balance, 1 ether, "borrower received the borrowed ETH");
     }
 
@@ -95,8 +92,8 @@ contract LendingPoolTest is Test {
         _depositAsLender(5 ether);
         vm.deal(borrower, 1 ether);
         vm.prank(borrower);
-        vm.expectRevert("Not enough collateral in USD");
-        pool.borrow{value: 1e14}(1 ether, LoanManager.RateMode.Variable, 30);
+        vm.expectRevert("Not enough collateral");
+        pool.borrow{value: 1e14}(1 ether, LoanManager.RateMode.Variable, 30); // far below 200%
     }
 
     function test_Borrow_RevertsOnBadDuration() public {
@@ -106,79 +103,92 @@ contract LendingPoolTest is Test {
         pool.borrow{value: 2 ether}(1 ether, LoanManager.RateMode.Variable, 1);
     }
 
-    /// @notice KNOWN BUG, documented as a passing test: repayLoan() can NEVER succeed.
-    /// After splitting the interest, repayLoan does:
-    ///     (bool ok2, ) = payable(address(this)).call{value: lenderInterest}("");
-    ///     require(ok2, "Lender interest failed");
-    /// It calls the pool *itself* with empty calldata. LendingPool defines no receive()/fallback(),
-    /// so that call returns false and the entire repayment reverts. Consequence: no borrower can
-    /// ever repay or recover their collateral. Fix: drop the self-call (the ETH is already in the
-    /// pool from msg.value), or add `receive() external payable {}` to LendingPool.
-    function test_Repay_RevertsDueToSelfCallBug() public {
+    // --- repay (FIXED: was always reverting) ----------------------------
+
+    function test_Repay_BurnsDebtAndReturnsCollateral() public {
         _depositAsLender(5 ether);
         _borrowVariable(1 ether, 2 ether, 30);
 
-        // let ~15 days of interest accrue
-        vm.warp(block.timestamp + 15 days);
+        vm.warp(block.timestamp + 15 days); // accrue some interest
 
-        vm.deal(borrower, 2 ether); // top up so borrower can cover principal + interest
+        vm.deal(borrower, 2 ether); // top up to cover principal + interest
+        uint256 indexBefore = atoken.getLiquidityIndex();
+
         vm.prank(borrower);
-        vm.expectRevert("Lender interest failed");
-        pool.repayLoan{value: 1.01 ether}(0);
+        pool.repayLoan{value: 1.05 ether}(0);
+
+        (,,, bool isRepaid,,,,) = pool.getUserLoan(borrower, 0);
+        assertTrue(isRepaid, "loan marked repaid");
+        assertEq(vdt.balanceOf(borrower), 0, "debt token burned");
+        assertEq(pool.totalOutstandingDebt(), 0, "pool debt cleared");
+        assertGt(vault.getBalance(), 0, "protocol fee captured");
+        assertGt(atoken.getLiquidityIndex(), indexBefore, "lenders earned real yield via the index");
     }
 
-    // --- liquidation -----------------------------------------------------
+    function test_Repay_RefundsOverpayment() public {
+        _depositAsLender(5 ether);
+        _borrowVariable(1 ether, 2 ether, 30);
+
+        // repay immediately => interest ~ 0, owed ~ 1 ETH principal
+        vm.deal(borrower, 5 ether);
+        vm.prank(borrower);
+        pool.repayLoan{value: 3 ether}(0); // big overpay
+
+        // principal (1) stays in the pool; collateral (2) + overpayment (2) come back => 5 - 3 + 2 + 2 = 6
+        assertEq(borrower.balance, 6 ether, "overpayment refunded, only principal retained");
+    }
+
+    // --- liquidation (FIXED: liquidator must repay the debt) -------------
 
     function test_Liquidate_WhenOverdue() public {
         _depositAsLender(5 ether);
-        _borrowVariable(1 ether, 2 ether, 30); // healthy collateral (2x)
+        _borrowVariable(1 ether, 2 ether, 30); // 2x collateral, healthy until overdue
 
         vm.warp(block.timestamp + 31 days); // now overdue
 
+        vm.deal(liquidator, 1 ether);
         uint256 before = liquidator.balance;
         vm.prank(liquidator);
-        pool.liquidate(borrower, 0);
+        pool.liquidate{value: 1 ether}(borrower, 0); // repay 1 principal, seize 2 collateral
 
-        assertEq(liquidator.balance, before + 2 ether, "liquidator seized collateral");
+        assertEq(liquidator.balance, before + 1 ether, "profit = collateral(2) - principal(1)");
+        assertEq(vdt.balanceOf(borrower), 0, "borrower debt burned");
+        assertEq(pool.totalOutstandingDebt(), 0, "pool debt cleared");
         (,,,, bool isLiquidated,,,) = pool.getUserLoan(borrower, 0);
         assertTrue(isLiquidated, "loan marked liquidated");
     }
 
-    function test_Liquidate_WhenUnderCollateralized() public {
+    function test_Liquidate_RevertsWithoutRepayingDebt() public {
         _depositAsLender(5 ether);
-        // collateral == borrowed => below the 120% threshold immediately
-        _borrowVariable(1 ether, 1 ether, 30);
+        _borrowVariable(1 ether, 2 ether, 30);
+        vm.warp(block.timestamp + 31 days);
 
-        uint256 before = liquidator.balance;
+        vm.deal(liquidator, 1 ether);
         vm.prank(liquidator);
-        pool.liquidate(borrower, 0); // not overdue, but under-collateralized
-
-        assertEq(liquidator.balance, before + 1 ether, "liquidator seized collateral");
+        vm.expectRevert("Must repay debt to liquidate");
+        pool.liquidate{value: 0.5 ether}(borrower, 0); // less than the 1 ETH principal
     }
 
     function test_Liquidate_RevertsWhenHealthy() public {
         _depositAsLender(5 ether);
         _borrowVariable(1 ether, 2 ether, 30); // 2x collateral, not overdue
 
+        vm.deal(liquidator, 1 ether);
         vm.prank(liquidator);
         vm.expectRevert("Not eligible for liquidation");
-        pool.liquidate(borrower, 0);
+        pool.liquidate{value: 1 ether}(borrower, 0);
     }
 
     // --- interest rate model (pure math) --------------------------------
 
     function test_InterestRateModel_Curve() public view {
-        // zero liquidity => base + protocol fee
         assertEq(irm.getInterestRate(0, 0), 30e15, "base+fee at empty pool");
-        // 0% utilization => base + fee = 2.5% + 0.5% = 3%
         assertEq(irm.getInterestRate(100 ether, 0), 30e15, "0% utilization");
-        // 80% (optimal) => base + slope1 + fee = 2.5% + 3% + 0.5% = 6%
         assertEq(irm.getInterestRate(100 ether, 80 ether), 60e15, "optimal utilization");
-        // 90% (above optimal) => base + slope1 + half of slope2 + fee = 10.5%
         assertEq(irm.getInterestRate(100 ether, 90 ether), 105e15, "above optimal");
     }
 
-    // --- token access control -------------------------------------------
+    // --- access control --------------------------------------------------
 
     function test_DebtToken_IsNonTransferable() public {
         _depositAsLender(5 ether);
@@ -191,12 +201,23 @@ contract LendingPoolTest is Test {
 
     function test_OnlyPool_CanMintDebt() public {
         vm.expectRevert("Only pool can mint");
-        vdt.mint(borrower, 1 ether); // called by the test contract, not the pool
+        vdt.mint(borrower, 1 ether);
     }
 
     function test_OnlyPool_CanMintAToken() public {
         vm.expectRevert("Only pool can call");
         atoken.mint(lender, 1 ether);
+    }
+
+    function test_OnlyOwner_CanSetOraclePrice() public {
+        vm.prank(borrower); // not the owner
+        vm.expectRevert(); // OZ Ownable: OwnableUnauthorizedAccount
+        oracle.setEthPrice(1500e18);
+    }
+
+    function test_Owner_CanSetOraclePrice() public {
+        oracle.setEthPrice(1500e18); // test contract is the owner
+        assertEq(oracle.getLatestEthPrice(), 1500e18);
     }
 
     receive() external payable {}

@@ -4,21 +4,19 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @title aToken - Token đại diện tài sản gửi vào pool, sử dụng lãi kép (liquidity index)
+/// @title aToken - interest-bearing receipt for ETH deposited into the pool
+/// @notice Aave-style scaled-balance model: a holder's ERC20 balance is the *scaled* amount, and the
+///         redeemable ETH = scaledBalance * liquidityIndex / RAY.
+/// @dev FIX (#4): the liquidity index now rises ONLY when the pool credits REAL interest via
+///      accrueToLenders(). The original design grew the index purely with elapsed time at a fixed
+///      rate, i.e. it manufactured yield that the pool did not actually hold (insolvency risk).
 contract aToken is ERC20, Ownable {
     address public pool;
 
     uint256 public constant RAY = 1e27; // Aave standard: 1 RAY = 1e27
-    uint256 public liquidityIndex = RAY; // Bắt đầu 1:1
-    uint256 public lastUpdateTimestamp;
-    uint256 public interestRate; // annual rate (scaled 1e18)
+    uint256 public liquidityIndex = RAY; // starts 1:1
 
-    mapping(address => uint256) public userIndex;
-
-    constructor(address _initialOwner) ERC20("aToken ETH", "aETH") Ownable(_initialOwner) {
-        lastUpdateTimestamp = block.timestamp;
-        interestRate = 3e16; // 3% mặc định
-    }
+    constructor(address _initialOwner) ERC20("aToken ETH", "aETH") Ownable(_initialOwner) {}
 
     modifier onlyPool() {
         require(msg.sender == pool, "Only pool can call");
@@ -29,49 +27,32 @@ contract aToken is ERC20, Ownable {
         pool = _pool;
     }
 
-    /// @notice Pool cập nhật lãi suất (APR), tính theo năm
-    function updateInterestRate(uint256 newRate) external onlyPool {
-        _accrue();
-        interestRate = newRate;
-    }
-
-    /// @notice Mint aToken (user gửi ETH vào pool)
+    /// @notice Mint scaled aTokens for ETH deposited (`amount` is the underlying ETH in wei)
     function mint(address user, uint256 amount) external onlyPool {
-        _accrue();
-
         uint256 scaledAmount = (amount * RAY) / liquidityIndex;
         _mint(user, scaledAmount);
-        userIndex[user] = liquidityIndex;
     }
 
-    /// @notice Burn aToken (user rút ETH khỏi pool)
+    /// @notice Burn scaled aTokens when a lender withdraws
     function burn(address user, uint256 amount) external onlyPool {
-        _accrue();
         _burn(user, amount);
     }
 
-    /// @dev Cập nhật chỉ số liquidityIndex theo thời gian
-    function _accrue() internal {
-        uint256 elapsed = block.timestamp - lastUpdateTimestamp;
-        if (elapsed == 0) return;
-
-        uint256 accruedInterest = (liquidityIndex * interestRate * elapsed) / (365 days * 1e18);
-        liquidityIndex += accruedInterest;
-        lastUpdateTimestamp = block.timestamp;
+    /// @notice Credit real interest to all lenders by raising the liquidity index.
+    /// @dev The ETH itself stays in the pool; this only increases what each scaled token redeems.
+    function accrueToLenders(uint256 ethAmount) external onlyPool {
+        uint256 supply = totalSupply();
+        if (supply == 0 || ethAmount == 0) return;
+        liquidityIndex += (ethAmount * RAY) / supply;
     }
 
-    /// @notice Dự đoán số ETH người dùng sẽ nhận được khi rút
-    function previewWithdraw(address user) external view returns (uint256) {
-        uint256 currentIndex = getLiquidityIndex();
-        return (balanceOf(user) * currentIndex) / RAY;
-    }
-
-    /// @notice Lấy chỉ số liquidityIndex cập nhật
+    /// @notice Current liquidity index (ETH redeemable per scaled token = index / RAY)
     function getLiquidityIndex() public view returns (uint256) {
-        uint256 elapsed = block.timestamp - lastUpdateTimestamp;
-        if (elapsed == 0) return liquidityIndex;
+        return liquidityIndex;
+    }
 
-        uint256 accruedInterest = (liquidityIndex * interestRate * elapsed) / (365 days * 1e18);
-        return liquidityIndex + accruedInterest;
+    /// @notice Underlying ETH a user could withdraw right now
+    function previewWithdraw(address user) external view returns (uint256) {
+        return (balanceOf(user) * liquidityIndex) / RAY;
     }
 }
