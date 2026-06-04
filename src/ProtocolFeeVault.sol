@@ -1,27 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-/// @title ProtocolFeeVault - Lưu trữ phí từ lãi suất borrower trả
-/// @notice LendingPool sẽ gọi gửi ETH vào đây, và chủ sở hữu có thể rút
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+/// @title ProtocolFeeVault - Lưu trữ phí (bằng VNDS) từ lãi suất borrower trả
+/// @notice LendingPool chuyển VNDS vào đây bằng ERC20 transfer, và chủ sở hữu có thể rút.
+/// @dev Loan asset đổi từ ETH sang VNDS, nên vault giờ giữ một ERC20 (VNDS) thay vì native ETH.
 contract ProtocolFeeVault {
     address public owner;
+    IERC20 public immutable vnd;
 
-    constructor() {
+    constructor(address _vnd) {
         owner = msg.sender;
+        vnd = IERC20(_vnd);
     }
 
-    /// @notice Nhận ETH từ LendingPool
-    receive() external payable {}
-
-    /// @notice Chủ sở hữu rút toàn bộ phí đã thu
+    /// @notice Chủ sở hữu rút toàn bộ phí VNDS đã thu
     function withdraw() external {
         require(msg.sender == owner, "Not owner");
-        payable(owner).transfer(address(this).balance);
+        uint256 bal = vnd.balanceOf(address(this));
+        require(vnd.transfer(owner, bal), "VND transfer failed");
     }
 
-    /// @notice Xem số ETH đã thu được
+    /// @notice Xem số VNDS đã thu được
     function getBalance() external view returns (uint256) {
-        return address(this).balance;
+        return vnd.balanceOf(address(this));
     }
 
     /// @notice Đổi chủ sở hữu nếu cần
