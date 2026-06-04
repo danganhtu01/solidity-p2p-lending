@@ -48,19 +48,40 @@ forge test       # run the suite (16 tests)
 forge test -vvv  # with traces
 ```
 
-### Deploy
+## Deploying & where to host
+
+A smart contract is "hosted" by **deploying it to a blockchain**. Network config lives in
+`foundry.toml` (`[rpc_endpoints]` + `[etherscan]`) and reads secrets from `.env` (see `.env.example`).
 
 ```bash
-# Local
-anvil
-forge script script/Deploy.s.sol --fork-url http://localhost:8545 --broadcast
+cp .env.example .env    # fill in an RPC URL, a funded deployer key, an Etherscan key
 
-# Testnet (e.g. Holesky)
-forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --private-key $PRIVATE_KEY
+# 1) Local (free, instant, throwaway) — anvil prints 10 funded test accounts + keys
+anvil
+forge script script/Deploy.s.sol --rpc-url http://localhost:8545 --broadcast \
+  --private-key <a key anvil printed>
+
+# 2) Public testnet — Sepolia (recommended for this project). Verifies on Etherscan.
+cast wallet import deployer --interactive            # store your key encrypted (once)
+forge script script/Deploy.s.sol --rpc-url sepolia --broadcast --verify --account deployer
 ```
 
-`Deploy.s.sol` deploys the full stack and wires `setPool(...)` on each token. Swap `MockPriceOracle`
-for `ChainlinkPriceOracle` (with a real feed address) before any non-test deployment.
+`Deploy.s.sol` deploys the full stack and wires `setPool(...)` on each token. **Swap `MockPriceOracle`
+for `ChainlinkPriceOracle`** (with a real feed address) before any non-test deployment.
+
+### Where to host — recommendation (mid-2026)
+
+| Target | Use for | Notes |
+|---|---|---|
+| **anvil** (local) | dev + tests | instant, free |
+| **Sepolia** ✅ | testing this build publicly | best tooling + faucets + Etherscan. ⚠️ EOL ~30 Sep 2026 |
+| **Hoodi** | a longer-lived testnet | open validator set; lives to ~2028 |
+| **Base / Arbitrum** (L2 mainnet) | a *real* product | cheap gas vs L1 — **only after a professional audit** |
+| **Ethereum L1 mainnet** | — | avoid: costly, and this code is unaudited |
+
+> ⚠️ This is unaudited learning code — **deploy to a testnet, never mainnet with real value.** Get test
+> ETH from a faucet (Alchemy / PoW for Sepolia). The **frontend** dApp can be hosted separately on
+> GitHub Pages, Vercel/Netlify, or IPFS (Fleek); it only needs the deployed address + ABI.
 
 ## What was fixed
 
@@ -98,7 +119,9 @@ made correct in isolation) was removed; `LendingPool.liquidate` is the single ca
 
 ## Original Holesky deployment
 
-The source project (with the bugs above) was deployed to **Holesky (chainId 17000)** from Remix:
+The source project (with the bugs above) was deployed to **Holesky (chainId 17000)** from Remix.
+⚠️ **Holesky was shut down in September 2025**, so these addresses are historical/dead — redeploy to
+Sepolia (see [Deploying & where to host](#deploying--where-to-host)):
 
 | Contract | Address |
 |---|---|

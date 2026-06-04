@@ -47,5 +47,6 @@ contract Deploy is Script {
         console.log("VariableDebtToken:", address(vdt));
         console.log("InterestRateModel:", address(irm));
         console.log("ProtocolFeeVault :", address(vault));
+        console.log("Chain id         :", block.chainid);
     }
 }
