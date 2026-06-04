@@ -9,7 +9,7 @@ contract LoanManager {
 
     /// @notice Struct định nghĩa 1 khoản vay
     struct Loan {
-        uint256 amountBorrowed;     // Số VNDS vay (1e18)
+        uint256 amountBorrowed;     // Số VNDD vay (1e18)
         uint256 collateralAmount;   // Số ETH thế chấp (wei)
         uint256 dueDate;            // Thời hạn đáo hạn (timestamp)
         bool isRepaid;              // Trạng thái đã trả nợ

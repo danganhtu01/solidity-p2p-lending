@@ -3,7 +3,7 @@ pragma solidity ^0.8.19;
 
 import "./DebtToken.sol";
 
-/// @title VariableDebtToken – Token đại diện khoản vay VNDS lãi suất biến động
+/// @title VariableDebtToken – Token đại diện khoản vay VNDD lãi suất biến động
 /// @notice Mint khi user vay với lãi suất thay đổi, burn khi trả nợ
 contract VariableDebtToken is DebtToken {
     constructor(address initialOwner) DebtToken(initialOwner) {}

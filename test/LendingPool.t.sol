@@ -13,8 +13,8 @@ import {MockPriceOracle} from "../src/MockPriceOracle.sol";
 import {ProtocolFeeVault} from "../src/ProtocolFeeVault.sol";
 
 /// @title LendingPool test suite (VND-stablecoin version)
-/// @notice The loan asset is VNDS: lenders supply VNDS, borrowers lock ETH collateral and borrow VNDS,
-///         repay/liquidate in VNDS. Covers the full lifecycle plus the now-reachable
+/// @notice The loan asset is VNDD: lenders supply VNDD, borrowers lock ETH collateral and borrow VNDD,
+///         repay/liquidate in VNDD. Covers the full lifecycle plus the now-reachable
 ///         under-collateralization liquidation that the old single-asset ETH design could not trip.
 contract LendingPoolTest is Test {
     LendingPool internal pool;
@@ -92,7 +92,7 @@ contract LendingPoolTest is Test {
     function test_Deposit_MintsAToken() public {
         _depositAsLender(LEND);
         assertEq(atoken.balanceOf(lender), LEND, "aToken minted 1:1 at start");
-        assertEq(vnd.balanceOf(address(pool)), LEND, "pool holds the VNDS");
+        assertEq(vnd.balanceOf(address(pool)), LEND, "pool holds the VNDD");
     }
 
     function test_Deposit_RequiresApproval() public {
@@ -106,7 +106,7 @@ contract LendingPoolTest is Test {
         _depositAsLender(LEND);
         vm.prank(lender);
         pool.withdraw(LEND);
-        assertEq(vnd.balanceOf(lender), LEND, "lender got VNDS back");
+        assertEq(vnd.balanceOf(lender), LEND, "lender got VNDD back");
         assertEq(atoken.balanceOf(lender), 0, "aToken burned");
     }
 
@@ -119,7 +119,7 @@ contract LendingPoolTest is Test {
         assertEq(vdt.balanceOf(borrower), BORROW, "variable debt token minted");
         assertEq(pool.getLoanCount(borrower), 1, "one loan recorded");
         assertEq(pool.totalOutstandingDebt(), BORROW, "pool-wide debt tracked");
-        assertEq(vnd.balanceOf(borrower), BORROW, "borrower received the borrowed VNDS");
+        assertEq(vnd.balanceOf(borrower), BORROW, "borrower received the borrowed VNDD");
         assertEq(address(pool).balance, COLLAT, "pool holds the ETH collateral");
     }
 
@@ -140,7 +140,7 @@ contract LendingPoolTest is Test {
     }
 
     function test_Borrow_RevertsWhenNoLiquidity() public {
-        // no lender deposit => pool has no VNDS to lend
+        // no lender deposit => pool has no VNDD to lend
         vm.deal(borrower, COLLAT);
         vm.prank(borrower);
         vm.expectRevert("No liquidity");
@@ -167,7 +167,7 @@ contract LendingPoolTest is Test {
         assertTrue(isRepaid, "loan marked repaid");
         assertEq(vdt.balanceOf(borrower), 0, "debt token burned");
         assertEq(pool.totalOutstandingDebt(), 0, "pool debt cleared");
-        assertGt(vault.getBalance(), 0, "protocol fee captured (in VNDS)");
+        assertGt(vault.getBalance(), 0, "protocol fee captured (in VNDD)");
         assertGt(atoken.getLiquidityIndex(), indexBefore, "lenders earned real yield via the index");
         assertEq(borrower.balance, COLLAT, "ETH collateral returned");
     }

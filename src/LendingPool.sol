@@ -12,11 +12,11 @@ import "./InterestRateModel.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title LendingPool - core of the P2P over-collateralized lending protocol
-/// @notice The **loan asset is VNDS** (a VND-pegged stablecoin): lenders supply VNDS and earn yield,
-///         borrowers lock ETH collateral and borrow VNDS, and everyone repays/liquidates in VNDS.
+/// @notice The **loan asset is VNDD** (a VND-pegged stablecoin): lenders supply VNDD and earn yield,
+///         borrowers lock ETH collateral and borrow VNDD, and everyone repays/liquidates in VNDD.
 ///         ETH is collateral only — it is never lent out.
 /// @dev Fixes carried over from the ETH version (see README "What was fixed"):
-///   #1 repayLoan no longer calls itself; lender interest stays in the pool (as VNDS).
+///   #1 repayLoan no longer calls itself; lender interest stays in the pool (as VNDD).
 ///   #2 liquidate() requires the liquidator to repay the debt and burns the debt token.
 ///   #3 utilization uses a pool-wide `totalBorrowed` instead of only msg.sender's loans.
 ///   #4 repaid interest is credited to lenders through aToken.accrueToLenders (real yield).
@@ -33,7 +33,7 @@ contract LendingPool is LoanManager, ReentrancyGuard {
     InterestRateModel public interestModel;
     address public protocolFeeVault;
 
-    /// @notice Pool-wide outstanding VNDS principal (fix #3)
+    /// @notice Pool-wide outstanding VNDD principal (fix #3)
     uint256 public totalBorrowed;
 
     uint256 public constant COLLATERAL_RATIO = 200; // 200% over-collateralization
@@ -73,7 +73,7 @@ contract LendingPool is LoanManager, ReentrancyGuard {
         protocolFeeVault = _protocolFeeVault;
     }
 
-    /// @notice VNDS currently sitting in the pool, available to borrow or withdraw.
+    /// @notice VNDD currently sitting in the pool, available to borrow or withdraw.
     function availableLiquidity() public view returns (uint256) {
         return vnd.balanceOf(address(this));
     }
@@ -82,7 +82,7 @@ contract LendingPool is LoanManager, ReentrancyGuard {
     // LENDER SIDE
     // ---------------------
 
-    /// @notice Supply VNDS to the pool (requires a prior `vnd.approve(pool, amount)`).
+    /// @notice Supply VNDD to the pool (requires a prior `vnd.approve(pool, amount)`).
     function deposit(uint256 amount) external nonReentrant {
         require(amount > 0, "Amount must be > 0");
         atoken.mint(msg.sender, amount); // effects (scaled mint) before the external pull
@@ -108,8 +108,8 @@ contract LendingPool is LoanManager, ReentrancyGuard {
     // BORROWER SIDE
     // ---------------------
 
-    /// @notice Borrow VNDS against ETH collateral. Send the ETH collateral as msg.value.
-    /// @param _amount VNDS to borrow (1e18-scaled)
+    /// @notice Borrow VNDD against ETH collateral. Send the ETH collateral as msg.value.
+    /// @param _amount VNDD to borrow (1e18-scaled)
     function borrow(uint256 _amount, RateMode _rateMode, uint256 _days) external payable nonReentrant {
         require(_amount > 0, "Invalid amount");
         require(_days >= 3 && _days <= 180, "Loan duration must be 3-180 days");
@@ -151,7 +151,7 @@ contract LendingPool is LoanManager, ReentrancyGuard {
         emit Borrow(msg.sender, loanIndex, _amount, _rateMode);
     }
 
-    /// @notice Repay a loan in VNDS (requires a prior `vnd.approve(pool, totalOwed)`), get ETH back.
+    /// @notice Repay a loan in VNDD (requires a prior `vnd.approve(pool, totalOwed)`), get ETH back.
     function repayLoan(uint256 index) external nonReentrant {
         Loan storage loan = userLoans[msg.sender][index];
         require(!loan.isRepaid, "Already repaid");
@@ -194,11 +194,11 @@ contract LendingPool is LoanManager, ReentrancyGuard {
         }
 
         // --- interactions ---
-        // Pull the full amount owed in VNDS. Principal + lenderShare stay in the pool; the protocol
+        // Pull the full amount owed in VNDD. Principal + lenderShare stay in the pool; the protocol
         // cut is forwarded to the vault. No overpayment/refund path is needed — we pull the exact sum.
         require(vnd.transferFrom(msg.sender, address(this), totalOwed), "VND transfer failed");
 
-        // FIX #1/#4: lenders' share is credited to the liquidity index (real yield); the VNDS itself
+        // FIX #1/#4: lenders' share is credited to the liquidity index (real yield); the VNDD itself
         // stays in the pool, redeemable on withdraw. Principal also replenishes pool liquidity.
         atoken.accrueToLenders(lenderShare);
 
@@ -218,8 +218,8 @@ contract LendingPool is LoanManager, ReentrancyGuard {
     // ---------------------
 
     /// @notice Liquidate an overdue or under-collateralized loan. FIX #2: the liquidator repays the
-    ///         outstanding VNDS principal and in return seizes the ETH collateral (profit = collateral
-    ///         value − principal). The debt token is burned and the principal replenishes pool VNDS.
+    ///         outstanding VNDD principal and in return seizes the ETH collateral (profit = collateral
+    ///         value − principal). The debt token is burned and the principal replenishes pool VNDD.
     /// @dev With ETH collateral and VND debt, `isUnderCollateralized` is now price-sensitive: a large
     ///      enough drop in the ETH/VND price makes a once-healthy loan liquidatable even before it is
     ///      overdue. (Requires a prior `vnd.approve(pool, principal)`.)
@@ -249,7 +249,7 @@ contract LendingPool is LoanManager, ReentrancyGuard {
         }
 
         // --- interactions ---
-        // Liquidator repays the debt in VNDS, then seizes the ETH collateral.
+        // Liquidator repays the debt in VNDD, then seizes the ETH collateral.
         require(vnd.transferFrom(msg.sender, address(this), principal), "VND transfer failed");
 
         (bool sent,) = payable(msg.sender).call{value: collateral}("");
@@ -266,7 +266,7 @@ contract LendingPool is LoanManager, ReentrancyGuard {
         return userLoans[user].length;
     }
 
-    /// @notice Pool-wide outstanding VNDS principal (fix #3: was per-caller and wrong before)
+    /// @notice Pool-wide outstanding VNDD principal (fix #3: was per-caller and wrong before)
     function totalOutstandingDebt() external view returns (uint256) {
         return totalBorrowed;
     }

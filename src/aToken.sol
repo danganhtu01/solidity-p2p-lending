@@ -4,9 +4,9 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @title aToken - interest-bearing receipt for VNDS deposited into the pool
+/// @title aToken - interest-bearing receipt for VNDD deposited into the pool
 /// @notice Aave-style scaled-balance model: a holder's ERC20 balance is the *scaled* amount, and the
-///         redeemable VNDS = scaledBalance * liquidityIndex / RAY.
+///         redeemable VNDD = scaledBalance * liquidityIndex / RAY.
 /// @dev FIX (#4): the liquidity index now rises ONLY when the pool credits REAL interest via
 ///      accrueToLenders(). The original design grew the index purely with elapsed time at a fixed
 ///      rate, i.e. it manufactured yield that the pool did not actually hold (insolvency risk).
@@ -27,7 +27,7 @@ contract aToken is ERC20, Ownable {
         pool = _pool;
     }
 
-    /// @notice Mint scaled aTokens for VNDS deposited (`amount` is the underlying VNDS in 1e18 units)
+    /// @notice Mint scaled aTokens for VNDD deposited (`amount` is the underlying VNDD in 1e18 units)
     function mint(address user, uint256 amount) external onlyPool {
         uint256 scaledAmount = (amount * RAY) / liquidityIndex;
         _mint(user, scaledAmount);
@@ -39,19 +39,19 @@ contract aToken is ERC20, Ownable {
     }
 
     /// @notice Credit real interest to all lenders by raising the liquidity index.
-    /// @dev The VNDS itself stays in the pool; this only increases what each scaled token redeems.
+    /// @dev The VNDD itself stays in the pool; this only increases what each scaled token redeems.
     function accrueToLenders(uint256 vndAmount) external onlyPool {
         uint256 supply = totalSupply();
         if (supply == 0 || vndAmount == 0) return;
         liquidityIndex += (vndAmount * RAY) / supply;
     }
 
-    /// @notice Current liquidity index (VNDS redeemable per scaled token = index / RAY)
+    /// @notice Current liquidity index (VNDD redeemable per scaled token = index / RAY)
     function getLiquidityIndex() public view returns (uint256) {
         return liquidityIndex;
     }
 
-    /// @notice Underlying VNDS a user could withdraw right now
+    /// @notice Underlying VNDD a user could withdraw right now
     function previewWithdraw(address user) external view returns (uint256) {
         return (balanceOf(user) * liquidityIndex) / RAY;
     }

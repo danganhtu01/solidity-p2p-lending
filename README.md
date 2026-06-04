@@ -1,14 +1,14 @@
 # solidity-p2p-lending
 
 An **Aave-style, over-collateralized peer-to-pool lending protocol**, written in Solidity as a learning
-project and ported to **Foundry**. The **loan asset is VNDS**, a stablecoin pegged to the Vietnamese
-Dong (VND): lenders supply VNDS and receive an interest-bearing receipt token (`aVND`); borrowers post
-**ETH collateral**, borrow **VNDS** at a fixed or floating rate, receive a non-transferable debt token,
+project and ported to **Foundry**. The **loan asset is VNDD**, a stablecoin pegged to the Vietnamese
+Dong (VND): lenders supply VNDD and receive an interest-bearing receipt token (`aVND`); borrowers post
+**ETH collateral**, borrow **VNDD** at a fixed or floating rate, receive a non-transferable debt token,
 and repay with interest. Loans can be liquidated when overdue **or** when the ETH/VND price falls far
 enough that the collateral no longer covers the debt.
 
 > ⚠️ **Educational code — not audited, do NOT use with real funds.** It started from a Remix export
-> with several serious bugs; those have been fixed (see [What was fixed](#what-was-fixed)). The VNDS
+> with several serious bugs; those have been fixed (see [What was fixed](#what-was-fixed)). The VNDD
 > "peg" is purely nominal (no reserves/redemption) — see [Design notes](#design-notes--remaining-simplifications).
 
 ## Architecture
@@ -16,7 +16,7 @@ enough that the collateral no longer covers the debt.
 | Contract | Responsibility |
 |---|---|
 | `LendingPool.sol` | Core entry point: `deposit / withdraw / borrow / repayLoan / liquidate`. Inherits `LoanManager` + `ReentrancyGuard`. Tracks pool-wide `totalBorrowed`. |
-| `VNDStablecoin.sol` | The loan asset — a VND-pegged ERC-20 (`VNDS`, 18 decimals). Owner `mint` + open `faucet()` for test funds. |
+| `VNDStablecoin.sol` | The loan asset — a VND-pegged ERC-20 (`VNDD`, 18 decimals). Owner `mint` + open `faucet()` for test funds. |
 | `LoanManager.sol` | Loan storage: the `Loan` struct, `RateMode` enum, and `userLoans` mapping. |
 | `InterestRateModel.sol` | Aave-style kinked utilization curve for variable-rate loans. |
 | `Utils.sol` | Library: `isOverdue`, `isUnderCollateralized` (120% threshold; values ETH collateral against VND debt). |
@@ -27,18 +27,18 @@ enough that the collateral no longer covers the debt.
 | `MockPriceOracle.sol` | Owner-settable ETH price **in VND**, used by `LendingPool` for testing. |
 | `ChainlinkPriceOracle.sol` | Production oracle reading a Chainlink feed (would need an ETH/VND source). |
 | `PriceOracle.sol` | Older owner-settable mock (superseded by `MockPriceOracle`). |
-| `ProtocolFeeVault.sol` | Collects the protocol's fee + late-penalty share **in VNDS**; owner can withdraw. |
+| `ProtocolFeeVault.sol` | Collects the protocol's fee + late-penalty share **in VNDD**; owner can withdraw. |
 
 ### Lifecycle
 
 ```
-Lender   approve(VNDS) + deposit(amount) ─► aVND minted ─► withdraw() burns aVND, redeems VNDS + accrued yield
-Borrower borrow(amount, mode, days){value: ETH} ─► ETH collateral locked (≥200% in VND), debt token minted, VNDS sent
-         approve(VNDS) + repayLoan(i) ─► debt burned, interest split (protocol vs lenders), ETH collateral returned
-Liquidator approve(VNDS) + liquidate() ─► if overdue OR under-collateralized: repay VNDS principal, seize ETH, burn debt
+Lender   approve(VNDD) + deposit(amount) ─► aVND minted ─► withdraw() burns aVND, redeems VNDD + accrued yield
+Borrower borrow(amount, mode, days){value: ETH} ─► ETH collateral locked (≥200% in VND), debt token minted, VNDD sent
+         approve(VNDD) + repayLoan(i) ─► debt burned, interest split (protocol vs lenders), ETH collateral returned
+Liquidator approve(VNDD) + liquidate() ─► if overdue OR under-collateralized: repay VNDD principal, seize ETH, burn debt
 ```
 
-ETH is **collateral only** — it is never lent out. VNDS is the unit of account for liquidity, debt,
+ETH is **collateral only** — it is never lent out. VNDD is the unit of account for liquidity, debt,
 interest, and fees.
 
 ## Getting started
@@ -59,7 +59,7 @@ forge test -vvv  # with traces
 A smart contract is "hosted" by **deploying it to a blockchain**. Network config lives in
 `foundry.toml` (`[rpc_endpoints]` + `[etherscan]`) and reads secrets from `.env` (see `.env.example`).
 `Deploy.s.sol` deploys the full stack, wires `setPool(...)` on each token, mints the deployer some
-VNDS, and seeds the pool with starting liquidity so borrowing works immediately.
+VNDD, and seeds the pool with starting liquidity so borrowing works immediately.
 
 ```bash
 cp .env.example .env    # fill in an RPC URL, a funded deployer key, an Etherscan key
@@ -87,7 +87,7 @@ forge script script/Deploy.s.sol --rpc-url sepolia --broadcast --verify --accoun
 | **Ethereum L1 mainnet** | — | avoid: costly, and this code is unaudited |
 
 > ⚠️ This is unaudited learning code — **deploy to a testnet, never mainnet with real value.** Get test
-> ETH from a faucet (Alchemy / PoW for Sepolia), and test VNDS from `VNDStablecoin.faucet()`. The
+> ETH from a faucet (Alchemy / PoW for Sepolia), and test VNDD from `VNDStablecoin.faucet()`. The
 > **frontend** dApp (`frontend/index.html`) is hosted on **GitHub Pages**; it only needs the deployed
 > address + ABI.
 
@@ -99,7 +99,7 @@ The original Remix export had seven documented issues. All are addressed:
    `receive()`/`fallback()`. **Fix:** removed the self-call — the lender's funds stay in the pool and
    are credited via the liquidity index.
 2. **`liquidate()` gave collateral away for free.** **Fix:** the liquidator must repay the outstanding
-   principal (now in VNDS); the debt token is burned and the principal replenishes pool liquidity.
+   principal (now in VNDD); the debt token is burned and the principal replenishes pool liquidity.
 3. **`totalOutstandingDebt()` only saw `msg.sender`'s loans.** **Fix:** a pool-wide `totalBorrowed`
    state variable, updated on borrow/repay/liquidate, now drives utilization.
 4. **Lender interest was never credited.** **Fix:** `aToken.accrueToLenders()` raises the liquidity
@@ -117,8 +117,8 @@ The dead, duplicated `CollateralManager.sol` was removed; `LendingPool.liquidate
 
 This branch makes the **loan asset a VND-pegged stablecoin** instead of native ETH:
 
-- **VNDS is the loan unit.** Lenders `approve` + `deposit` VNDS (no longer `payable`); borrowers receive
-  VNDS; repay and liquidation are paid in VNDS via `transferFrom` (so the borrower/liquidator `approve`
+- **VNDD is the loan unit.** Lenders `approve` + `deposit` VNDD (no longer `payable`); borrowers receive
+  VNDD; repay and liquidation are paid in VNDD via `transferFrom` (so the borrower/liquidator `approve`
   the pool first). Because repay pulls the *exact* amount owed, the old overpayment-refund path is gone.
 - **ETH is collateral only.** It is sent as `msg.value` on `borrow` and returned on repay/liquidate.
 - **The oracle now matters.** Collateral (ETH) and debt (VND) are different assets, so the ETH/VND
@@ -128,9 +128,9 @@ This branch makes the **loan asset a VND-pegged stablecoin** instead of native E
 
 ## Design notes & remaining simplifications
 
-- **The VNDS peg is nominal.** `VNDStablecoin` is a plain mintable ERC-20 with an open faucet — there is
+- **The VNDD peg is nominal.** `VNDStablecoin` is a plain mintable ERC-20 with an open faucet — there is
   no reserve, redemption, or peg-defence mechanism. A real VND stablecoin would need off-chain fiat
-  backing or on-chain over-collateralization (à la DAI). The "1 VNDS = 1 VND" peg here lives only in the
+  backing or on-chain over-collateralization (à la DAI). The "1 VNDD = 1 VND" peg here lives only in the
   oracle price.
 - **Liquidation forgives accrued interest** (liquidator repays principal only) for simplicity.
 - **Lender yield is real-only:** lenders earn solely from borrower interest paid into the pool, not from

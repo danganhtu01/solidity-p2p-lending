@@ -3,7 +3,7 @@ pragma solidity ^0.8.19;
 
 import "./DebtToken.sol";
 
-/// @title StableDebtToken – Token đại diện khoản vay VNDS lãi suất cố định
+/// @title StableDebtToken – Token đại diện khoản vay VNDD lãi suất cố định
 /// @notice Mint khi user vay với fixed rate, burn khi user trả nợ
 contract StableDebtToken is DebtToken {
     constructor(address initialOwner) DebtToken(initialOwner) {}

@@ -19,7 +19,7 @@ contract Deploy is Script {
     // real ETH/VND oracle for a production deploy.
     uint256 public constant INITIAL_ETH_PRICE_VND = 70_000_000e18;
 
-    // VNDS minted to the deployer, and how much of it is seeded into the pool as starting liquidity.
+    // VNDD minted to the deployer, and how much of it is seeded into the pool as starting liquidity.
     uint256 public constant DEPLOYER_MINT = 10_000_000_000e18; // 10,000,000,000 VND
     uint256 public constant SEED_LIQUIDITY = 1_000_000_000e18; //  1,000,000,000 VND
 
@@ -44,8 +44,8 @@ contract Deploy is Script {
         sdt.setPool(address(pool));
         vdt.setPool(address(pool));
 
-        // Mint the deployer some VNDS and seed the pool with starting liquidity so borrowing works
-        // immediately. (Anyone else can grab test VNDS via vnd.faucet().)
+        // Mint the deployer some VNDD and seed the pool with starting liquidity so borrowing works
+        // immediately. (Anyone else can grab test VNDD via vnd.faucet().)
         vnd.mint(owner, DEPLOYER_MINT);
         vnd.approve(address(pool), SEED_LIQUIDITY);
         pool.deposit(SEED_LIQUIDITY);

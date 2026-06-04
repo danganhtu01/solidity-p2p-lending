@@ -9,8 +9,8 @@
   ============================================================================
   SINGLE-FILE FRONTEND for the VND-stablecoin P2Plending protocol (LendingPool.sol)
   ----------------------------------------------------------------------------
-  THE PROTOCOL IN ONE LINE: lenders supply VNDS (a VND-pegged stablecoin),
-  borrowers lock ETH collateral and borrow VNDS, everyone repays in VNDS.
+  THE PROTOCOL IN ONE LINE: lenders supply VNDD (a VND-pegged stablecoin),
+  borrowers lock ETH collateral and borrow VNDD, everyone repays in VNDD.
 
   HOW A dApp FRONTEND WORKS (the whole idea in 4 lines):
     1. A wallet (MetaMask) injects `window.ethereum` into the page.
@@ -20,7 +20,7 @@
     4. view/pure calls return data for free; state-changing calls return a
        pending transaction you must `await tx.wait()` on (and the user signs).
 
-  ERC-20 GOTCHA: VNDS is a token, so the pool must be allowed to pull it.
+  ERC-20 GOTCHA: VNDD is a token, so the pool must be allowed to pull it.
   deposit / repay / liquidate therefore first send an `approve(pool, amount)`
   if the current allowance is too low, THEN the actual call.
 
@@ -113,7 +113,7 @@
     <button id="connectBtn">Connect Wallet</button>
   </div>
 </header>
-<p class="sub">Supply <b>VNDS</b> (a VND-pegged stablecoin) to earn yield, or lock <b>ETH</b> collateral to borrow VNDS. A learning dApp on the Sepolia testnet — test funds only.</p>
+<p class="sub">Supply <b>VNDD</b> (a VND-pegged stablecoin) to earn yield, or lock <b>ETH</b> collateral to borrow VNDD. A learning dApp on the Sepolia testnet — test funds only.</p>
 
 <div id="cfgBanner" class="banner"></div>
 
@@ -122,19 +122,19 @@
 <!-- ───────── DASHBOARD CARDS (live reads, no wallet needed) ───────── -->
 <div class="grid cards">
   <div class="card"><div class="k">ETH price (oracle)</div><div class="v" id="cPrice">—</div><div class="u">VND per ETH</div></div>
-  <div class="card"><div class="k">Pool liquidity</div><div class="v" id="cLiquidity">—</div><div class="u">VNDS available to borrow</div></div>
+  <div class="card"><div class="k">Pool liquidity</div><div class="v" id="cLiquidity">—</div><div class="u">VNDD available to borrow</div></div>
   <div class="card"><div class="k">Liquidity index</div><div class="v" id="cIndex">—</div><div class="u">aVND RAY index (1.0 = start)</div></div>
-  <div class="card"><div class="k">My VNDS wallet</div><div class="v" id="cWallet">—</div><div class="u">spendable VNDS</div></div>
+  <div class="card"><div class="k">My VNDD wallet</div><div class="v" id="cWallet">—</div><div class="u">spendable VNDD</div></div>
   <div class="card"><div class="k">My aVND balance</div><div class="v" id="cBal">—</div><div class="u">scaled deposit token</div></div>
-  <div class="card"><div class="k">My redeemable VNDS</div><div class="v" id="cRedeem">—</div><div class="u">principal + accrued yield</div></div>
+  <div class="card"><div class="k">My redeemable VNDD</div><div class="v" id="cRedeem">—</div><div class="u">principal + accrued yield</div></div>
 </div>
 
 <!-- ───────── FAUCET ───────── -->
 <div class="panel" style="margin-bottom:16px">
-  <h2>🚰 Get test VNDS</h2>
+  <h2>🚰 Get test VNDD</h2>
   <div class="cols2 grid" style="align-items:center">
-    <p class="hint" style="margin:0">VNDS is the loan currency. Mint yourself <b>100,000,000 VND</b> of test VNDS to lend or to repay a loan. (You still need Sepolia ETH from a faucet for gas + collateral.)</p>
-    <div class="row" style="margin:0"><button id="faucetBtn" class="gold" disabled>Mint 100,000,000 test VNDS</button></div>
+    <p class="hint" style="margin:0">VNDD is the loan currency. Mint yourself <b>100,000,000 VND</b> of test VNDD to lend or to repay a loan. (You still need Sepolia ETH from a faucet for gas + collateral.)</p>
+    <div class="row" style="margin:0"><button id="faucetBtn" class="gold" disabled>Mint 100,000,000 test VNDD</button></div>
   </div>
 </div>
 
@@ -144,21 +144,21 @@
   <!-- LENDER -->
   <div class="panel">
     <h2>💰 Lender</h2>
-    <label>Deposit VNDS (earns interest from borrowers)</label>
+    <label>Deposit VNDD (earns interest from borrowers)</label>
     <input id="depositAmt" type="number" min="0" step="1" placeholder="1000000" />
-    <div class="hint" id="depositHint">Approves the pool to pull your VNDS, then deposits.</div>
+    <div class="hint" id="depositHint">Approves the pool to pull your VNDD, then deposits.</div>
     <div class="row"><button id="depositBtn" class="green" disabled>Approve & Deposit</button></div>
 
     <label style="margin-top:20px">Withdraw — amount of aVND to redeem</label>
     <input id="withdrawAmt" type="number" min="0" step="1" placeholder="1000000" />
-    <div class="hint">You receive <code>aVND × liquidityIndex</code> in VNDS.</div>
+    <div class="hint">You receive <code>aVND × liquidityIndex</code> in VNDD.</div>
     <div class="row"><button id="withdrawBtn" class="ghost" disabled>Withdraw</button></div>
   </div>
 
   <!-- BORROWER -->
   <div class="panel">
     <h2>🏗️ Borrower</h2>
-    <label>Borrow amount (VNDS)</label>
+    <label>Borrow amount (VNDD)</label>
     <input id="borrowAmt" type="number" min="0" step="1" placeholder="30000000" />
 
     <label>Rate mode</label>
@@ -173,7 +173,7 @@
     <label>Collateral to lock (ETH, sent with the tx)</label>
     <input id="borrowCollat" type="number" min="0" step="0.001" placeholder="1" />
     <div class="hint" id="borrowHint">Enter a borrow amount to see the minimum ETH collateral (200%).</div>
-    <div class="row"><button id="borrowBtn" class="green" disabled>Borrow VNDS</button></div>
+    <div class="row"><button id="borrowBtn" class="green" disabled>Borrow VNDD</button></div>
   </div>
 </div>
 
@@ -188,7 +188,7 @@
       <tbody id="loansBody"><tr><td colspan="8" style="color:var(--muted)">Connect your wallet to see your loans.</td></tr></tbody>
     </table>
   </div>
-  <div class="note">Repay <b>approves</b> the pool for principal + interest (+ late penalty) in VNDS, then calls <code>repayLoan</code>. The contract pulls the <b>exact</b> amount owed (no overpayment), and returns your ETH collateral.</div>
+  <div class="note">Repay <b>approves</b> the pool for principal + interest (+ late penalty) in VNDD, then calls <code>repayLoan</code>. The contract pulls the <b>exact</b> amount owed (no overpayment), and returns your ETH collateral.</div>
 </div>
 
 <!-- ───────── LIQUIDATE + TESTING TOOLS ───────── -->
@@ -234,8 +234,8 @@
 
 <footer>
   <b>Deployed contracts (Sepolia · chainId 11155111):</b><br>
-  LendingPool <a id="fPool" target="_blank" rel="noopener"></a> · VNDS <a id="fVnd" target="_blank" rel="noopener"></a> · aVND <a id="fAtoken" target="_blank" rel="noopener"></a> · Oracle <a id="fOracle" target="_blank" rel="noopener"></a><br>
-  Only the LendingPool address is configured; VNDS, aVND and the oracle are discovered at runtime via <code>pool.vnd()</code> / <code>pool.atoken()</code> / <code>pool.oracle()</code>.
+  LendingPool <a id="fPool" target="_blank" rel="noopener"></a> · VNDD <a id="fVnd" target="_blank" rel="noopener"></a> · aVND <a id="fAtoken" target="_blank" rel="noopener"></a> · Oracle <a id="fOracle" target="_blank" rel="noopener"></a><br>
+  Only the LendingPool address is configured; VNDD, aVND and the oracle are discovered at runtime via <code>pool.vnd()</code> / <code>pool.atoken()</code> / <code>pool.oracle()</code>.
 </footer>
 
 <!-- ethers.js v6 (UMD build exposes a global `ethers`) -->
@@ -311,7 +311,7 @@ const ZERO = "0x0000000000000000000000000000000000000000";
 /* ============================================================================
    4. SMALL HELPERS  (formatting + status + activity log)
    ========================================================================== */
-// VNDS / VND amounts are 18-decimals; show as grouped integers with a ₫ suffix.
+// VNDD / VND amounts are 18-decimals; show as grouped integers with a ₫ suffix.
 const vndFmt = (x) => "₫" + Number(ethers.formatEther(x)).toLocaleString(undefined,{maximumFractionDigits:0});
 const eth    = (wei) => Number(ethers.formatEther(wei)).toLocaleString(undefined,{maximumFractionDigits:6});
 const pct    = (x)   => (Number(ethers.formatEther(x)) * 100).toFixed(2) + "%";
@@ -344,12 +344,12 @@ function ethWei(id){
   return ethers.parseEther(v);
 }
 
-// Ensure the pool is approved to pull `amount` VNDS from the user; sends approve if not.
+// Ensure the pool is approved to pull `amount` VNDD from the user; sends approve if not.
 async function ensureAllowance(amount){
   const current = await vnd.allowance(account, LENDING_POOL);
   if(current >= amount) return;
-  status("Approve VNDS in MetaMask…");
-  logLine(`⏳ <b>Approve VNDS</b> for the pool…`);
+  status("Approve VNDD in MetaMask…");
+  logLine(`⏳ <b>Approve VNDD</b> for the pool…`);
   const tx = await vnd.approve(LENDING_POOL, amount);
   await tx.wait();
   logLine(`✅ <b>Approve</b> confirmed · ${txLink(tx.hash)}`);
@@ -543,7 +543,7 @@ window.repay = async function(i){
       owed += (L.amountBorrowed * pen * daysLate) / E18;
     }
     const approveAmt = owed + owed / 100n;                // +1% buffer for timing drift
-    logLine(`ℹ️ Repaying loan #${i}: owe ≈ ${vndFmt(owed)} VNDS`);
+    logLine(`ℹ️ Repaying loan #${i}: owe ≈ ${vndFmt(owed)} VNDD`);
     await ensureAllowance(approveAmt);
     await send(`Repay #${i}`, () => pool.repayLoan(i));
   }catch(e){
@@ -571,7 +571,7 @@ $("setPriceBtn").onclick = () =>
 function subscribeEvents(){
   try{
     pool.on("LoanLiquidated", (borrower, loanIndex, liquidator, seized, debt) => {
-      logLine(`🧨 <b>Liquidation</b>: ${addrLink(borrower)} loan #${loanIndex} by ${addrLink(liquidator)} — seized ${eth(seized)} ETH for ${vndFmt(debt)} VNDS`);
+      logLine(`🧨 <b>Liquidation</b>: ${addrLink(borrower)} loan #${loanIndex} by ${addrLink(liquidator)} — seized ${eth(seized)} ETH for ${vndFmt(debt)} VNDD`);
       refreshAll();
     });
   }catch(e){ /* some injected providers don't support filters; non-fatal */ }
