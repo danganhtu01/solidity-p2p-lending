@@ -246,14 +246,14 @@
    ========================================================================== */
 // Filled in after the Sepolia deploy. Can be overridden at runtime in the
 // "Contract" panel (stored in localStorage), which is handy after a redeploy.
-const DEFAULT_LENDING_POOL = "0x0000000000000000000000000000000000000000";
+const DEFAULT_LENDING_POOL = "0x6F190e133FcCD29777ee85E39a7104109561F28D";
 const LENDING_POOL = (localStorage.getItem("vndp2p.pool") || DEFAULT_LENDING_POOL).trim();
 
 const SEPOLIA = {
   chainId: "0xaa36a7",                     // 11155111 in hex
   chainName: "Sepolia",
   nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
+  rpcUrls: ["https://sepolia.drpc.org"],
   blockExplorerUrls: ["https://sepolia.etherscan.io"],
 };
 const EXPLORER = SEPOLIA.blockExplorerUrls[0];

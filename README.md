@@ -137,12 +137,29 @@ This branch makes the **loan asset a VND-pegged stablecoin** instead of native E
   the passage of time.
 - **Utilization uses available (not total) liquidity** as the denominator, mirroring the original model.
 
+## Live deployment (Sepolia · chainId 11155111)
+
+🔗 **Live dApp:** https://danganhtu01.github.io/solidity-p2p-lending/
+
+| Contract | Address |
+|---|---|
+| **LendingPool** | [`0x6F190e133FcCD29777ee85E39a7104109561F28D`](https://sepolia.etherscan.io/address/0x6F190e133FcCD29777ee85E39a7104109561F28D) |
+| **VNDStablecoin (VNDD)** | [`0xb30FD05657919A083b4bfE059689EE3120C0b940`](https://sepolia.etherscan.io/address/0xb30FD05657919A083b4bfE059689EE3120C0b940) |
+| aToken (aVND) | [`0xC57f573A34E9D28652B3f789e5bBa48ec2A21b70`](https://sepolia.etherscan.io/address/0xC57f573A34E9D28652B3f789e5bBa48ec2A21b70) |
+| MockPriceOracle | [`0x70f31EC1A40C4dAC118512Edb5023B9eeCC17b99`](https://sepolia.etherscan.io/address/0x70f31EC1A40C4dAC118512Edb5023B9eeCC17b99) |
+| StableDebtToken (sdVND) | [`0xff633c37e59E71fA1b6dFa74c0e646556D284f2B`](https://sepolia.etherscan.io/address/0xff633c37e59E71fA1b6dFa74c0e646556D284f2B) |
+| VariableDebtToken (vdVND) | [`0x704094249E4A0401e67695b4E035741A28eA427C`](https://sepolia.etherscan.io/address/0x704094249E4A0401e67695b4E035741A28eA427C) |
+| InterestRateModel | [`0xDa607da91f5EA397DA14ACB27D56074dd7431BCF`](https://sepolia.etherscan.io/address/0xDa607da91f5EA397DA14ACB27D56074dd7431BCF) |
+| ProtocolFeeVault | [`0xaD8cF6Dc87D6300d879B5001F5E1bBb3eDfdce93`](https://sepolia.etherscan.io/address/0xaD8cF6Dc87D6300d879B5001F5E1bBb3eDfdce93) |
+
+The pool launched with **1,000,000,000 VNDD** of seeded liquidity and the oracle at **70,000,000 VND/ETH**.
+To try it: grab Sepolia ETH from a faucet, click **Get test VNDD** in the dApp, then lend or borrow.
+
 ## Original Holesky deployment
 
 The source project (with the bugs above) was deployed to **Holesky (chainId 17000)** from Remix.
-⚠️ **Holesky was shut down in September 2025**, so those addresses are historical/dead. The current
-VND-stablecoin build is deployed to **Sepolia** — see [Deploying & where to host](#deploying--where-to-host)
-and `frontend/index.html` for the live addresses.
+⚠️ **Holesky was shut down in September 2025**, so those addresses are historical/dead and have been
+superseded by the Sepolia deployment above.
 
 ## Origin & license
 
