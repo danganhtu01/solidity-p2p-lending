@@ -49,8 +49,8 @@ contract LendingProtocolV2Test is Test {
         // protocol
         proto = new LendingProtocolV2(address(oracle), address(vndd), treasury);
         vndd.setMinter(address(proto), true);
-        proto.configureCollateral(address(weth), 18, 15000, 12000); // ETH: min 150%, liq 120%
-        proto.configureCollateral(address(wsol), 18, 20000, 15000); // SOL: min 200%, liq 150%
+        proto.configureCollateral(address(weth), 18, 15000, 12000, 1000); // ETH: 150%/120%, 10% bonus
+        proto.configureCollateral(address(wsol), 18, 20000, 15000, 1500); // SOL: 200%/150%, 15% bonus
         proto.configureDebt(address(vndd), LendingProtocolV2.DebtKind.Mint, 18, 200); // 2% stability fee
         proto.configureDebt(address(usdc), LendingProtocolV2.DebtKind.Pool, 6, 500); // 5% borrow rate
 
@@ -127,7 +127,7 @@ contract LendingProtocolV2Test is Test {
         uint256 supplyBefore = vndd.totalSupply();
         vm.startPrank(borrower);
         vndd.approve(address(proto), owed);
-        proto.repay(id);
+        proto.repay(id, type(uint256).max);
         vm.stopPrank();
 
         (,,, uint256 principal,,, bool active) = proto.getPosition(borrower, id);
@@ -199,7 +199,7 @@ contract LendingProtocolV2Test is Test {
 
         vm.startPrank(borrower);
         usdc.approve(address(proto), owed);
-        proto.repay(id);
+        proto.repay(id, type(uint256).max);
         vm.stopPrank();
 
         assertGt(proto.suppliedBalance(address(usdc), lender), supplierBefore, "supplier earned interest");
@@ -253,12 +253,71 @@ contract LendingProtocolV2Test is Test {
     function test_OnlyOwner_ConfiguresCollateral() public {
         vm.prank(borrower);
         vm.expectRevert();
-        proto.configureCollateral(address(weth), 18, 15000, 12000);
+        proto.configureCollateral(address(weth), 18, 15000, 12000, 1000);
     }
 
     function test_OnlyMinter_CanMintVndd() public {
         vm.prank(borrower);
         vm.expectRevert("VNDD: not a minter");
         vndd.mint(borrower, 1e18);
+    }
+
+    // --- v2 hardening: partial repay, borrow-more, liquidation residual, health factor ---
+
+    function test_PartialRepay_ReducesPrincipalKeepsOpen() public {
+        uint256 id = _openEthVndd(1e18, 30_000_000e18); // borrower holds 30M VNDD from the mint
+        vm.startPrank(borrower);
+        vndd.approve(address(proto), type(uint256).max);
+        proto.repay(id, 10_000_000e18); // partial (interest ~0 immediately)
+        vm.stopPrank();
+
+        (,,, uint256 principal,,, bool active) = proto.getPosition(borrower, id);
+        assertEq(principal, 20_000_000e18, "principal reduced by the partial payment");
+        assertTrue(active, "position stays open");
+        assertEq(weth.balanceOf(borrower), 0, "collateral stays locked on partial repay");
+        assertEq(vndd.balanceOf(borrower), 20_000_000e18, "10M VNDD burned");
+    }
+
+    function test_BorrowMore_IncreasesDebt() public {
+        uint256 id = _openEthVndd(1e18, 20_000_000e18); // headroom (max ~50.8M)
+        vm.prank(borrower);
+        proto.borrow(id, 10_000_000e18);
+        (,,, uint256 principal,,,) = proto.getPosition(borrower, id);
+        assertEq(principal, 30_000_000e18, "principal grew");
+        assertEq(vndd.balanceOf(borrower), 30_000_000e18, "more VNDD minted");
+    }
+
+    function test_BorrowMore_RevertsWhenUnhealthy() public {
+        uint256 id = _openEthVndd(1e18, 30_000_000e18);
+        vm.prank(borrower);
+        vm.expectRevert("insufficient collateral");
+        proto.borrow(id, 30_000_000e18); // would breach 150%
+    }
+
+    function test_Liquidate_PartialSeize_ResidualToBorrower() public {
+        uint256 id = _openEthVndd(1e18, 30_000_000e18); // debt ~ $1,181
+        ethFeed.set(1400e8); // $1,400: liquidatable (<120% of $1,181) but collateral > debt x 1.1
+        assertTrue(proto.isLiquidatable(borrower, id), "liquidatable");
+
+        uint256 owed = proto.currentDebt(borrower, id);
+        vndd.ownerMint(liquidator, owed);
+        vm.startPrank(liquidator);
+        vndd.approve(address(proto), owed);
+        proto.liquidate(borrower, id);
+        vm.stopPrank();
+
+        uint256 liqColl = weth.balanceOf(liquidator);
+        uint256 borrowerColl = weth.balanceOf(borrower);
+        assertGt(liqColl, 0.9e18, "liquidator seized ~debt x 1.1 worth of ETH");
+        assertLt(liqColl, 1e18, "but not all of it");
+        assertGt(borrowerColl, 0, "borrower kept the residual collateral");
+        assertEq(liqColl + borrowerColl, 1e18, "seize + residual == original collateral");
+    }
+
+    function test_HealthFactor_AboveOneWhenHealthy() public {
+        uint256 id = _openEthVndd(1e18, 30_000_000e18);
+        assertGt(proto.healthFactor(borrower, id), 1e18, "healthy => HF > 1.0");
+        ethFeed.set(1200e8);
+        assertLt(proto.healthFactor(borrower, id), 1e18, "after a crash => HF < 1.0");
     }
 }

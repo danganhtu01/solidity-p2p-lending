@@ -16,8 +16,9 @@ import "./tokens/VNDStablecoinV2.sol";
 ///     what makes VNDD a real over-collateralized stablecoin. Its stability fee goes to the treasury.
 ///   - USDC debt is **borrowed from a supplied pool** (Aave style): USDC suppliers earn the borrow
 ///     interest through a rising liquidity index.
-/// @dev Educational/testnet. Simplifications: full-repay-to-close (no partial repay), seize-all-collateral
-///      on liquidation, simple linear interest. See README for the v3 backlog.
+/// @dev Educational/testnet. Supports partial repay, borrow-more, and liquidation with a bonus +
+///      partial collateral seizure (the borrower keeps the residual). Interest is simple/linear and
+///      capitalizes into principal on borrow-more.
 contract LendingProtocolV2 is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -37,6 +38,7 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
         uint8 decimals;
         uint256 minRatioBps; // required at borrow/withdraw, e.g. 15000 = 150%
         uint256 liqThresholdBps; // liquidatable below this, e.g. 13000 = 130%
+        uint256 liqBonusBps; // liquidator's discount/bonus, e.g. 1000 = 10%
     }
 
     struct DebtConfig {
@@ -51,7 +53,7 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
         address debtToken;
         uint256 collAmount; // in collToken decimals
         uint256 principal; // in debtToken decimals
-        uint256 rateBps; // snapshot of the rate at open
+        uint256 rateBps; // snapshot of the rate at open / last capitalization
         uint256 openedAt; // for linear interest accrual
         bool active;
     }
@@ -76,9 +78,10 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
     event PositionOpened(
         address indexed user, uint256 indexed id, address collToken, address debtToken, uint256 coll, uint256 debt
     );
+    event Borrowed(address indexed user, uint256 indexed id, uint256 amount);
     event CollateralAdded(address indexed user, uint256 indexed id, uint256 amount);
     event CollateralWithdrawn(address indexed user, uint256 indexed id, uint256 amount);
-    event Repaid(address indexed user, uint256 indexed id, uint256 amountPaid);
+    event Repaid(address indexed user, uint256 indexed id, uint256 amountPaid, bool closed);
     event Liquidated(
         address indexed user, uint256 indexed id, address indexed liquidator, uint256 collateralSeized, uint256 debtRepaid
     );
@@ -91,13 +94,17 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
 
     // --- configuration (owner) ------------------------------------------
 
-    function configureCollateral(address token, uint8 decimals, uint256 minRatioBps, uint256 liqThresholdBps)
-        external
-        onlyOwner
-    {
+    function configureCollateral(
+        address token,
+        uint8 decimals,
+        uint256 minRatioBps,
+        uint256 liqThresholdBps,
+        uint256 liqBonusBps
+    ) external onlyOwner {
         require(liqThresholdBps < minRatioBps, "liq < min");
         require(liqThresholdBps >= BPS, "ratio < 100%"); // must stay over-collateralized
-        collateralConfig[token] = CollateralConfig(true, decimals, minRatioBps, liqThresholdBps);
+        require(liqBonusBps < 5000, "bonus too high");
+        collateralConfig[token] = CollateralConfig(true, decimals, minRatioBps, liqThresholdBps, liqBonusBps);
         emit CollateralConfigured(token, minRatioBps, liqThresholdBps);
     }
 
@@ -140,8 +147,7 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
     // --- borrower side --------------------------------------------------
 
     /// @notice Open a position: lock `collAmount` of `collToken`, take `debtAmount` of `debtToken`.
-    ///         For VNDD, the debt is minted; for USDC, it is lent from the supplied pool.
-    /// @dev Requires a prior approve of `collToken` to this contract.
+    /// @dev Requires a prior approve of `collToken`.
     function openPosition(address collToken, uint256 collAmount, address debtToken, uint256 debtAmount)
         external
         nonReentrant
@@ -153,12 +159,10 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
         require(dc.allowed, "debt not allowed");
         require(collAmount > 0 && debtAmount > 0, "zero amount");
 
-        // Health check at open (USD): collateral >= debt * minRatio
         uint256 collUsd = _collateralUsd(collToken, collAmount, cc.decimals);
         uint256 debtUsd = _debtUsd(debtToken, debtAmount, dc);
         require(collUsd * BPS >= debtUsd * cc.minRatioBps, "insufficient collateral");
 
-        // pull collateral
         IERC20(collToken).safeTransferFrom(msg.sender, address(this), collAmount);
 
         positions[msg.sender].push(
@@ -174,14 +178,30 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
         );
         id = positions[msg.sender].length - 1;
 
-        // hand out the debt
-        if (dc.kind == DebtKind.Mint) {
-            vndd.mint(msg.sender, debtAmount);
-        } else {
-            require(IERC20(debtToken).balanceOf(address(this)) >= debtAmount, "insufficient pool liquidity");
-            IERC20(debtToken).safeTransfer(msg.sender, debtAmount);
-        }
+        _disburse(dc, debtToken, msg.sender, debtAmount);
         emit PositionOpened(msg.sender, id, collToken, debtToken, collAmount, debtAmount);
+    }
+
+    /// @notice Borrow more against an existing position (if it stays healthy). Accrued interest is
+    ///         capitalized into principal first, so the new total accrues from now.
+    function borrow(uint256 id, uint256 moreDebt) external nonReentrant {
+        Position storage p = positions[msg.sender][id];
+        require(p.active, "inactive");
+        require(moreDebt > 0, "zero");
+        CollateralConfig memory cc = collateralConfig[p.collToken];
+        DebtConfig memory dc = debtConfig[p.debtToken];
+
+        uint256 newPrincipal = _currentDebt(p) + moreDebt; // capitalize interest, then add
+        uint256 collUsd = _collateralUsd(p.collToken, p.collAmount, cc.decimals);
+        uint256 debtUsd = _debtUsd(p.debtToken, newPrincipal, dc);
+        require(collUsd * BPS >= debtUsd * cc.minRatioBps, "insufficient collateral");
+
+        p.principal = newPrincipal;
+        p.rateBps = dc.rateBps;
+        p.openedAt = block.timestamp;
+
+        _disburse(dc, p.debtToken, msg.sender, moreDebt);
+        emit Borrowed(msg.sender, id, moreDebt);
     }
 
     function addCollateral(uint256 id, uint256 amount) external nonReentrant {
@@ -199,11 +219,10 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
         require(p.active, "inactive");
         require(amount > 0 && amount <= p.collAmount, "bad amount");
         CollateralConfig memory cc = collateralConfig[p.collToken];
-        DebtConfig memory dc = debtConfig[p.debtToken];
 
         uint256 newColl = p.collAmount - amount;
         uint256 collUsd = _collateralUsd(p.collToken, newColl, cc.decimals);
-        uint256 debtUsd = _debtUsd(p.debtToken, _currentDebt(p), dc);
+        uint256 debtUsd = _debtUsd(p.debtToken, _currentDebt(p), debtConfig[p.debtToken]);
         require(collUsd * BPS >= debtUsd * cc.minRatioBps, "would be undercollateralized");
 
         p.collAmount = newColl;
@@ -211,96 +230,115 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
         emit CollateralWithdrawn(msg.sender, id, amount);
     }
 
-    /// @notice Repay a position in full (principal + accrued interest), unlocking all collateral.
-    /// @dev Requires a prior approve of the debt token for the full amount owed (see `currentDebt`).
-    function repay(uint256 id) external nonReentrant {
+    /// @notice Repay up to `amount` of the debt. Repaying the full amount owed closes the position and
+    ///         returns all collateral; a partial repay reduces the principal (collateral stays locked).
+    ///         Any repay must at least cover the accrued interest. Requires a prior approve.
+    function repay(uint256 id, uint256 amount) external nonReentrant {
         Position storage p = positions[msg.sender][id];
         require(p.active, "inactive");
+        require(amount > 0, "zero");
 
         uint256 principal = p.principal;
         uint256 owed = _currentDebt(p);
         uint256 interest = owed - principal;
-        uint256 coll = p.collAmount;
+        uint256 pay = amount >= owed ? owed : amount;
+        require(pay >= interest, "must cover accrued interest");
+        uint256 principalPaid = pay - interest;
 
-        // effects
-        p.active = false;
-        p.principal = 0;
-        p.collAmount = 0;
-
-        _settleDebt(p.debtToken, msg.sender, principal, interest);
-
-        // return collateral
-        IERC20(p.collToken).safeTransfer(msg.sender, coll);
-        emit Repaid(msg.sender, id, owed);
+        if (pay == owed) {
+            uint256 coll = p.collAmount;
+            p.active = false;
+            p.principal = 0;
+            p.collAmount = 0;
+            _settleDebt(p.debtToken, msg.sender, principal, interest);
+            IERC20(p.collToken).safeTransfer(msg.sender, coll);
+            emit Repaid(msg.sender, id, pay, true);
+        } else {
+            p.principal = principal - principalPaid;
+            p.openedAt = block.timestamp;
+            _settleDebt(p.debtToken, msg.sender, principalPaid, interest);
+            emit Repaid(msg.sender, id, pay, false);
+        }
     }
 
-    /// @notice Liquidate an under-collateralized position: repay its debt, seize all its collateral.
+    /// @notice Liquidate an under-collateralized position. The liquidator repays the debt and seizes
+    ///         collateral worth `debt × (1 + liqBonus)`; the borrower keeps any residual collateral.
     /// @dev Requires a prior approve of the debt token for the amount owed.
     function liquidate(address user, uint256 id) external nonReentrant {
         Position storage p = positions[user][id];
         require(p.active, "inactive");
 
         CollateralConfig memory cc = collateralConfig[p.collToken];
-        DebtConfig memory dc = debtConfig[p.debtToken];
         uint256 owed = _currentDebt(p);
         uint256 collUsd = _collateralUsd(p.collToken, p.collAmount, cc.decimals);
-        uint256 debtUsd = _debtUsd(p.debtToken, owed, dc);
+        uint256 debtUsd = _debtUsd(p.debtToken, owed, debtConfig[p.debtToken]);
         require(collUsd * BPS < debtUsd * cc.liqThresholdBps, "position is healthy");
 
         uint256 principal = p.principal;
         uint256 interest = owed - principal;
-        uint256 coll = p.collAmount;
+        uint256 totalColl = p.collAmount;
+
+        // collateral to seize = debt value × (1 + bonus), converted to collateral units, capped.
+        uint256 collPrice = oracle.getUsdPrice(p.collToken); // USD per whole coll token (1e18)
+        uint256 seize = (debtUsd * (BPS + cc.liqBonusBps) / BPS) * (10 ** cc.decimals) / collPrice;
+        if (seize > totalColl) seize = totalColl;
+        uint256 residual = totalColl - seize;
 
         // effects
         p.active = false;
         p.principal = 0;
         p.collAmount = 0;
 
-        // liquidator pays the debt, seizes the collateral
+        // liquidator repays the debt, seizes `seize`; borrower keeps `residual`
         _settleDebt(p.debtToken, msg.sender, principal, interest);
-        IERC20(p.collToken).safeTransfer(msg.sender, coll);
-        emit Liquidated(user, id, msg.sender, coll, owed);
+        IERC20(p.collToken).safeTransfer(msg.sender, seize);
+        if (residual > 0) IERC20(p.collToken).safeTransfer(user, residual);
+        emit Liquidated(user, id, msg.sender, seize, owed);
     }
 
     // --- internal -------------------------------------------------------
 
+    /// @dev Hand out `amount` of `debtToken`: mint VNDD, or transfer USDC from the pool.
+    function _disburse(DebtConfig memory dc, address debtToken, address to, uint256 amount) internal {
+        if (dc.kind == DebtKind.Mint) {
+            vndd.mint(to, amount);
+        } else {
+            require(IERC20(debtToken).balanceOf(address(this)) >= amount, "insufficient pool liquidity");
+            IERC20(debtToken).safeTransfer(to, amount);
+        }
+    }
+
     /// @dev Pull `principal + interest` of the debt token from `payer` and route it:
-    ///   - Mint (VNDD): burn the principal (removes the minted debt), send interest to the treasury.
+    ///   - Mint (VNDD): burn the principal, send interest to the treasury.
     ///   - Pool (USDC): principal replenishes pool liquidity, interest accrues to suppliers via the index.
     function _settleDebt(address debtToken, address payer, uint256 principal, uint256 interest) internal {
         DebtConfig memory dc = debtConfig[debtToken];
         uint256 owed = principal + interest;
+        IERC20(debtToken).safeTransferFrom(payer, address(this), owed);
         if (dc.kind == DebtKind.Mint) {
-            IERC20(debtToken).safeTransferFrom(payer, address(this), owed);
-            vndd.burn(address(this), principal);
+            if (principal > 0) vndd.burn(address(this), principal);
             if (interest > 0) IERC20(debtToken).safeTransfer(treasury, interest);
         } else {
-            IERC20(debtToken).safeTransferFrom(payer, address(this), owed);
-            // principal stays in the pool; interest raises the suppliers' index
             if (interest > 0 && totalScaledSupply[debtToken] > 0) {
                 supplyIndex[debtToken] += interest * RAY / totalScaledSupply[debtToken];
             } else if (interest > 0) {
-                IERC20(debtToken).safeTransfer(treasury, interest); // no suppliers => treasury
+                IERC20(debtToken).safeTransfer(treasury, interest);
             }
         }
     }
 
-    /// @dev principal + simple linear interest accrued since open.
     function _currentDebt(Position memory p) internal view returns (uint256) {
         uint256 interest = p.principal * p.rateBps * (block.timestamp - p.openedAt) / (YEAR * BPS);
         return p.principal + interest;
     }
 
-    /// @dev USD value (1e18) of a collateral amount.
     function _collateralUsd(address token, uint256 amount, uint8 decimals) internal view returns (uint256) {
         return oracle.getUsdPrice(token) * amount / (10 ** decimals);
     }
 
-    /// @dev USD value (1e18) of a debt amount. VNDD converts via the USD/VND rate; pool assets via their feed.
     function _debtUsd(address token, uint256 amount, DebtConfig memory dc) internal view returns (uint256) {
         if (dc.kind == DebtKind.Mint) {
-            // VNDD is 18-dec and 1 VNDD = 1 VND, so `amount` is already VND scaled 1e18.
-            return oracle.vndToUsd(amount);
+            return oracle.vndToUsd(amount); // VNDD is 18-dec, 1 VNDD = 1 VND
         } else {
             return oracle.getUsdPrice(token) * amount / (10 ** dc.decimals);
         }
@@ -343,6 +381,18 @@ contract LendingProtocolV2 is Ownable, ReentrancyGuard {
         uint256 collUsd = _collateralUsd(p.collToken, p.collAmount, collateralConfig[p.collToken].decimals);
         uint256 debtUsd = _debtUsd(p.debtToken, owed, debtConfig[p.debtToken]);
         return collUsd * BPS / debtUsd;
+    }
+
+    /// @notice Health factor (1e18-scaled): >= 1e18 is safe, < 1e18 is liquidatable. Max if no debt.
+    function healthFactor(address user, uint256 id) external view returns (uint256) {
+        Position memory p = positions[user][id];
+        if (!p.active) return 0;
+        uint256 owed = _currentDebt(p);
+        if (owed == 0) return type(uint256).max;
+        CollateralConfig memory cc = collateralConfig[p.collToken];
+        uint256 collUsd = _collateralUsd(p.collToken, p.collAmount, cc.decimals);
+        uint256 debtUsd = _debtUsd(p.debtToken, owed, debtConfig[p.debtToken]);
+        return collUsd * BPS * 1e18 / (debtUsd * cc.liqThresholdBps);
     }
 
     /// @notice True if the position can be liquidated right now.

@@ -42,8 +42,8 @@ contract DeployV2 is Script {
         // protocol
         LendingProtocolV2 proto = new LendingProtocolV2(address(oracle), address(vndd), owner);
         vndd.setMinter(address(proto), true);
-        proto.configureCollateral(address(weth), 18, 15000, 12000); // ETH: borrow at 150%, liquidate <120%
-        proto.configureCollateral(address(wsol), 18, 20000, 15000); // SOL: borrow at 200%, liquidate <150%
+        proto.configureCollateral(address(weth), 18, 15000, 12000, 1000); // ETH: 150%/120%, 10% liq bonus
+        proto.configureCollateral(address(wsol), 18, 20000, 15000, 1500); // SOL: 200%/150%, 15% liq bonus
         proto.configureDebt(address(vndd), LendingProtocolV2.DebtKind.Mint, 18, 200); // VNDD: 2% stability fee
         proto.configureDebt(address(usdc), LendingProtocolV2.DebtKind.Pool, 6, 500); // USDC: 5% borrow rate
 

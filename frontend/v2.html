@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VND Lending v2 — Multi-asset · Sepolia</title>
+<!--
+  v2 dApp: multi-collateral (WETH, wSOL) x multi-debt (VNDD minted, USDC pooled).
+  Oracles: Chainlink ETH/USD + USDC/USD (push), Pyth SOL/USD (pull), admin USD/VND.
+  Pyth is a PULL oracle: for wSOL actions we first fetch a signed update from Hermes and post it
+  on-chain (updatePriceFeeds) so the contract has a fresh SOL price to check health against.
+-->
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2230;--border:#2a313c;--text:#e6edf3;--muted:#8b949e;
+    --accent:#3b82f6;--accent2:#22c55e;--warn:#f59e0b;--danger:#ef4444;--vnd:#d4af37;--sol:#9945ff;--radius:14px;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:24px;max-width:1150px;margin:0 auto}
+  h1{font-size:22px;margin:0}h2{font-size:15px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 14px}
+  a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+  header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:8px}
+  .sub{color:var(--muted);font-size:13px;margin:2px 0 18px}
+  .pill{display:inline-flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--border);border-radius:999px;padding:6px 14px;font-size:13px;font-family:ui-monospace,monospace}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--danger)}.dot.ok{background:var(--accent2)}
+  button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer;transition:filter .15s}
+  button:hover{filter:brightness(1.1)}button:disabled{opacity:.45;cursor:not-allowed}
+  button.ghost{background:var(--panel2);border:1px solid var(--border)}button.green{background:var(--accent2)}
+  button.warn{background:var(--warn);color:#1a1a1a}button.red{background:var(--danger)}button.gold{background:var(--vnd);color:#1a1a1a}button.sol{background:var(--sol)}
+  button.sm{padding:6px 12px;font-size:13px}
+  input,select{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px;margin:4px 0 2px;font-family:inherit}
+  label{font-size:12px;color:var(--muted);display:block;margin-top:10px}
+  .grid{display:grid;gap:16px}.cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:20px}
+  .cols2{grid-template-columns:1fr 1fr}.cols4{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  @media(max-width:760px){.cols2{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
+  .card .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .card .v{font-size:18px;font-weight:700;margin-top:6px;font-family:ui-monospace,monospace;word-break:break-all}
+  .card .u{font-size:11px;color:var(--muted)}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px;min-height:16px}
+  .row{display:flex;gap:10px;margin-top:14px}.row button{flex:1}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 7px;border-bottom:1px solid var(--border);font-family:ui-monospace,monospace}
+  th{color:var(--muted);font-weight:600;text-transform:uppercase;font-size:11px}
+  .tag{font-size:11px;padding:2px 8px;border-radius:999px;font-family:system-ui}
+  .tag.ok{background:rgba(34,197,94,.15);color:#4ade80}.tag.risk{background:rgba(245,158,11,.15);color:#fbbf24}
+  .tag.bad{background:rgba(239,68,68,.15);color:#f87171}.tag.done{background:rgba(139,148,158,.15);color:var(--muted)}
+  #status{padding:11px 16px;border-radius:10px;background:var(--panel2);border:1px solid var(--border);margin-bottom:18px;font-size:13px;min-height:20px}
+  #log{font-family:ui-monospace,monospace;font-size:12px;max-height:200px;overflow:auto}#log .e{padding:6px 0;border-bottom:1px solid var(--border)}
+  footer{margin-top:26px;font-size:12px;color:var(--muted);line-height:1.8}
+  code{background:var(--panel2);padding:1px 6px;border-radius:6px;font-size:12px}
+  .banner{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.4);border-radius:10px;padding:12px 16px;font-size:13px;color:#f8b4b4;margin-bottom:16px;display:none}
+  .note{background:rgba(153,69,255,.08);border:1px solid rgba(153,69,255,.35);border-radius:10px;padding:10px 12px;font-size:12px;color:#c9a9ff;margin-top:12px}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>🏦 VND Lending <span style="color:var(--accent2)">v2</span> <span style="color:var(--muted);font-weight:400">· Multi-asset · Sepolia</span></h1></div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span class="pill"><span id="netDot" class="dot"></span><span id="netLabel">Not connected</span></span>
+    <span id="acctPill" class="pill" style="display:none"></span>
+    <button id="connectBtn">Connect Wallet</button>
+  </div>
+</header>
+<p class="sub">Lock <b>ETH</b> or <b style="color:var(--sol)">SOL</b> collateral → <b style="color:var(--vnd)">mint VNDD</b> (DAI-style) or <b>borrow USDC</b> (from a pool). Prices: Chainlink (ETH, USDC) + Pyth (SOL) + a Google USD/VND rate. Testnet only. · <a href="./index.html">↩ v1 (single-pair)</a></p>
+
+<div id="cfgBanner" class="banner"></div>
+<div id="status" aria-live="polite">Loading…</div>
+
+<!-- PRICES -->
+<div class="grid cards">
+  <div class="card"><div class="k">ETH / USD</div><div class="v" id="pEth">—</div><div class="u">Chainlink</div></div>
+  <div class="card"><div class="k">SOL / USD</div><div class="v" id="pSol">—</div><div class="u">Pyth (pull)</div></div>
+  <div class="card"><div class="k">USDC / USD</div><div class="v" id="pUsdc">—</div><div class="u">Chainlink</div></div>
+  <div class="card"><div class="k">USD → VND</div><div class="v" id="pVnd">—</div><div class="u">Google (admin)</div></div>
+  <div class="card"><div class="k">USDC pool</div><div class="v" id="pPool">—</div><div class="u">borrowable</div></div>
+</div>
+
+<!-- FAUCETS -->
+<div class="panel" style="margin-bottom:16px">
+  <h2>🚰 Test funds</h2>
+  <div class="grid cols4">
+    <div><label>Wrap ETH → WETH (collateral)</label><input id="wrapAmt" type="number" step="0.001" placeholder="0.05"/><button id="wrapBtn" class="ghost" disabled style="width:100%;margin-top:6px">Wrap ETH</button></div>
+    <div><label>Wrapped SOL (collateral)</label><div class="hint">1,000 test wSOL</div><button id="solBtn" class="sol" disabled style="width:100%;margin-top:6px">Get wSOL</button></div>
+    <div><label>USDC (borrow/supply)</label><div class="hint">10,000 test USDC</div><button id="usdcBtn" class="ghost" disabled style="width:100%;margin-top:6px">Get USDC</button></div>
+    <div><label>VNDD (to repay)</label><div class="hint">100,000,000 test VNDD</div><button id="vndBtn" class="gold" disabled style="width:100%;margin-top:6px">Get VNDD</button></div>
+  </div>
+  <div class="hint" id="balLine" style="margin-top:12px"></div>
+</div>
+
+<div class="grid cols2">
+  <!-- OPEN POSITION -->
+  <div class="panel">
+    <h2>🏗️ Open a position</h2>
+    <label>Collateral</label>
+    <select id="collSel"><option value="weth">WETH (ETH)</option><option value="wsol">wSOL (SOL)</option></select>
+    <label>Collateral amount</label>
+    <input id="collAmt" type="number" step="0.0001" placeholder="0.05"/>
+    <label>Borrow / mint</label>
+    <select id="debtSel"><option value="vndd">VNDD — mint (2% fee)</option><option value="usdc">USDC — borrow (5%)</option></select>
+    <label>Debt amount</label>
+    <input id="debtAmt" type="number" step="0.0001" placeholder="500000"/>
+    <div class="hint" id="openHint">Enter amounts to see the max you can borrow (min ratio applies).</div>
+    <div class="row"><button id="openBtn" class="green" disabled>Approve & Open</button></div>
+    <div class="note" id="pythNote" style="display:none">⚡ wSOL uses the Pyth pull oracle — opening will first post a fresh SOL price on-chain (a tiny extra tx + fee), then open.</div>
+  </div>
+
+  <!-- USDC SUPPLY -->
+  <div class="panel">
+    <h2>💵 Supply USDC (earn)</h2>
+    <p class="hint">Provide USDC liquidity for borrowers and earn their interest via a rising index (Aave-style). VNDD has no suppliers — it's minted.</p>
+    <label>Supply USDC</label>
+    <input id="supAmt" type="number" step="0.01" placeholder="1000"/>
+    <div class="row"><button id="supBtn" class="green" disabled>Approve & Supply</button></div>
+    <label style="margin-top:16px">Withdraw USDC</label>
+    <input id="wsupAmt" type="number" step="0.01" placeholder="1000"/>
+    <div class="hint" id="supBalLine"></div>
+    <div class="row"><button id="wsupBtn" class="ghost" disabled>Withdraw</button></div>
+  </div>
+</div>
+
+<!-- MY POSITIONS -->
+<div class="panel" style="margin-top:16px">
+  <h2>📋 My positions</h2>
+  <div style="overflow-x:auto"><table id="posTable">
+    <thead><tr><th>#</th><th>Collateral</th><th>Debt (owed)</th><th>Ratio</th><th>Status</th><th></th></tr></thead>
+    <tbody id="posBody"><tr><td colspan="6" style="color:var(--muted)">Connect your wallet.</td></tr></tbody>
+  </table></div>
+</div>
+
+<!-- LIQUIDATE -->
+<div class="panel" style="margin-top:16px">
+  <h2>🧨 Liquidate</h2>
+  <p class="hint">Repay an under-collateralized position's debt and seize its collateral. (wSOL positions post a fresh Pyth price first.)</p>
+  <div class="grid cols2">
+    <div><label>Borrower address</label><input id="liqAddr" placeholder="0x…"/></div>
+    <div><label>Position id</label><input id="liqId" type="number" min="0" placeholder="0"/></div>
+  </div>
+  <div class="row"><button id="liqBtn" class="red" disabled style="max-width:220px">Approve & Liquidate</button></div>
+</div>
+
+<div class="panel" style="margin-top:16px"><h2>📡 Activity</h2><div id="log"><div class="e" style="color:var(--muted)">Transactions appear here.</div></div></div>
+
+<div class="panel" style="margin-top:16px"><h2>⚙️ Contract</h2>
+  <label>LendingProtocolV2 address</label>
+  <div style="display:flex;gap:10px"><input id="protoInput" placeholder="0x…"/><button id="saveProtoBtn" class="ghost" style="white-space:nowrap">Save & reload</button></div>
+  <p class="hint">Other addresses are discovered from the protocol. Stored in this browser.</p>
+</div>
+
+<footer id="foot"></footer>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+/* ===== CONFIG (filled after the v2 Sepolia deploy) ===== */
+const CFG = {
+  protocol: "0x0000000000000000000000000000000000000000", // LendingProtocolV2
+  oracle:   "0x0000000000000000000000000000000000000000", // PriceOracleRouter
+  vndd:     "0x0000000000000000000000000000000000000000",
+  weth:     "0x0000000000000000000000000000000000000000",
+  wsol:     "0x0000000000000000000000000000000000000000",
+  usdc:     "0x0000000000000000000000000000000000000000",
+};
+const PROTOCOL = (localStorage.getItem("vndp2pv2.proto") || CFG.protocol).trim();
+const PYTH_ADDR = "0xDd24F84d36BF92C65F92307595335bdFab5Bbd21";
+const SOL_PYTH_ID = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
+const HERMES = "https://hermes.pyth.network";
+const SEPOLIA = {chainId:"0xaa36a7",chainName:"Sepolia",nativeCurrency:{name:"Sepolia Ether",symbol:"ETH",decimals:18},rpcUrls:["https://sepolia.drpc.org"],blockExplorerUrls:["https://sepolia.etherscan.io"]};
+const EXPLORER = SEPOLIA.blockExplorerUrls[0];
+
+const PROTO_ABI = [
+  "function oracle() view returns (address)","function vndd() view returns (address)",
+  "function openPosition(address collToken,uint256 collAmount,address debtToken,uint256 debtAmount) returns (uint256)",
+  "function addCollateral(uint256 id,uint256 amount)","function withdrawCollateral(uint256 id,uint256 amount)",
+  "function repay(uint256 id)","function liquidate(address user,uint256 id)",
+  "function supply(address asset,uint256 amount)","function withdrawSupply(address asset,uint256 scaled)",
+  "function getPositionCount(address user) view returns (uint256)",
+  "function getPosition(address user,uint256 id) view returns (address collToken,address debtToken,uint256 collAmount,uint256 principal,uint256 rateBps,uint256 openedAt,bool active)",
+  "function currentDebt(address user,uint256 id) view returns (uint256)",
+  "function collateralRatioBps(address user,uint256 id) view returns (uint256)",
+  "function isLiquidatable(address user,uint256 id) view returns (bool)",
+  "function availableLiquidity(address asset) view returns (uint256)",
+  "function suppliedBalance(address asset,address user) view returns (uint256)",
+  "function scaledSupply(address asset,address user) view returns (uint256)",
+];
+const ORACLE_ABI = ["function getUsdPrice(address) view returns (uint256)","function getVndPrice(address) view returns (uint256)","function usdVndRate() view returns (uint256)"];
+const ERC20_ABI = ["function balanceOf(address) view returns (uint256)","function allowance(address,address) view returns (uint256)","function approve(address,uint256) returns (bool)","function decimals() view returns (uint8)","function symbol() view returns (string)","function faucet()","function deposit() payable"];
+const PYTH_ABI = ["function getUpdateFee(bytes[]) view returns (uint256)","function updatePriceFeeds(bytes[]) payable"];
+
+const $=id=>document.getElementById(id); const ZERO="0x0000000000000000000000000000000000000000";
+const read = new ethers.JsonRpcProvider(SEPOLIA.rpcUrls[0],undefined,{batchMaxCount:1,staticNetwork:true});
+let provider,signer,account,proto,oracle,pyth;
+let A={}; // discovered addresses: oracle,vndd,weth,wsol,usdc
+const DEC={}; // token address -> decimals
+
+function status(m,k){const e=$("status");e.textContent=m;e.style.borderColor=k==="err"?"var(--danger)":k==="ok"?"var(--accent2)":"var(--border)";}
+function logLine(h){const l=$("log");if(l.firstChild&&l.firstChild.style&&l.firstChild.style.color)l.innerHTML="";const d=document.createElement("div");d.className="e";d.innerHTML=h;l.prepend(d);}
+const tx=h=>`<a href="${EXPLORER}/tx/${h}" target="_blank" rel="noopener">${h.slice(0,10)}…</a>`;
+const fmt=(x,d,dp=4)=>Number(ethers.formatUnits(x,d)).toLocaleString(undefined,{maximumFractionDigits:dp});
+const vnd=x=>"₫"+Number(ethers.formatUnits(x,18)).toLocaleString(undefined,{maximumFractionDigits:0});
+const usd=x=>"$"+Number(ethers.formatUnits(x,18)).toLocaleString(undefined,{maximumFractionDigits:2});
+
+async function send(label,fn){try{status(`${label}: confirm in MetaMask…`);const t=await fn();logLine(`⏳ <b>${label}</b> · ${tx(t.hash)}`);status(`${label}: mining…`);const r=await t.wait();logLine(`✅ <b>${label}</b> in block ${r.blockNumber}`);status(`${label} ✓`,"ok");await refreshAll();}catch(e){const m=e.shortMessage||e.reason||e.message||String(e);logLine(`❌ <b>${label}</b>: ${m}`);status(`${label} failed: ${m}`,"err");}}
+
+// Pyth pull: fetch a signed SOL update from Hermes and post it on-chain so the contract has a fresh price.
+async function postPythUpdate(){
+  const url=`${HERMES}/v2/updates/price/latest?ids[]=${SOL_PYTH_ID.replace(/^0x/,"")}&encoding=hex`;
+  const j=await(await fetch(url)).json();
+  const data=j.binary.data.map(d=>"0x"+d);
+  const fee=await pyth.getUpdateFee(data);
+  status("Posting fresh SOL price (Pyth)…");
+  logLine("⚡ <b>Pyth</b>: posting SOL price update…");
+  const t=await pyth.updatePriceFeeds(data,{value:fee});
+  await t.wait();
+  logLine(`✅ <b>Pyth</b> SOL price posted · ${tx(t.hash)}`);
+}
+
+async function connect(){
+  if(!window.ethereum){status("Install MetaMask, then reload.","err");return;}
+  if(!ethers.isAddress(PROTOCOL)||PROTOCOL===ZERO){status("Set the LendingProtocolV2 address in the Contract panel.","err");return;}
+  try{
+    try{await window.ethereum.request({method:"wallet_switchEthereumChain",params:[{chainId:SEPOLIA.chainId}]});}
+    catch(e){if(e.code===4902)await window.ethereum.request({method:"wallet_addEthereumChain",params:[SEPOLIA]});else throw e;}
+    provider=new ethers.BrowserProvider(window.ethereum);await provider.send("eth_requestAccounts",[]);
+    signer=await provider.getSigner();account=await signer.getAddress();
+    proto=new ethers.Contract(PROTOCOL,PROTO_ABI,signer);
+    await loadAddresses();
+    oracle=new ethers.Contract(A.oracle,ORACLE_ABI,signer);
+    pyth=new ethers.Contract(PYTH_ADDR,PYTH_ABI,signer);
+    $("netDot").classList.add("ok");$("netLabel").textContent="Sepolia";
+    $("acctPill").style.display="inline-flex";$("acctPill").textContent=account.slice(0,6)+"…"+account.slice(-4);
+    $("connectBtn").textContent="Connected";document.querySelectorAll("button[disabled]").forEach(b=>b.disabled=false);
+    setFooter();await refreshAll();status("Connected ✓","ok");
+    window.ethereum.on("accountsChanged",()=>location.reload());window.ethereum.on("chainChanged",()=>location.reload());
+  }catch(e){status("Connect failed: "+(e.shortMessage||e.message),"err");}
+}
+
+// Token addresses come from the baked CFG (no on-chain registry for them). oracle/vndd are also
+// verified from the protocol as the source of truth. We read decimals to scale amounts correctly.
+async function loadAddresses(){
+  A.weth=CFG.weth; A.wsol=CFG.wsol; A.usdc=CFG.usdc; A.vndd=CFG.vndd; A.oracle=CFG.oracle;
+  try{const rp=new ethers.Contract(PROTOCOL,PROTO_ABI,read); A.oracle=await rp.oracle(); A.vndd=await rp.vndd();}catch{}
+  for(const a of [A.weth,A.wsol,A.usdc,A.vndd]){
+    if(a&&a!==ZERO){try{DEC[a.toLowerCase()]=Number(await new ethers.Contract(a,ERC20_ABI,read).decimals());}catch{}}
+  }
+}
+function erc20(addr){return new ethers.Contract(addr,ERC20_ABI,signer);}
+function tokenForColl(v){return v==="weth"?A.weth:A.wsol;}
+function tokenForDebt(v){return v==="vndd"?A.vndd:A.usdc;}
+function dec(addr){return DEC[addr?.toLowerCase()]??18;}
+
+async function ensureAllowance(token,spender,amount){
+  const c=erc20(token);const cur=await c.allowance(account,spender);
+  if(cur>=amount)return;logLine("⏳ approve…");const t=await c.approve(spender,amount);await t.wait();logLine("✅ approved");
+}
+
+/* ---- prices/dashboard ---- */
+async function refreshPrices(){
+  try{
+    const roProto=new ethers.Contract(PROTOCOL,PROTO_ABI,read);
+    const oAddr=A.oracle||await roProto.oracle();const ro=new ethers.Contract(oAddr,ORACLE_ABI,read);
+    // SOL from Hermes (realtime display, no gas)
+    try{const j=await(await fetch(`${HERMES}/v2/updates/price/latest?ids[]=${SOL_PYTH_ID.replace(/^0x/,"")}`)).json();
+      const p=j.parsed[0].price;$("pSol").textContent="$"+(Number(p.price)*10**p.expo).toFixed(2);}catch{}
+    if(A.weth){try{$("pEth").textContent=usd(await ro.getUsdPrice(A.weth));}catch{}}
+    if(A.usdc){try{$("pUsdc").textContent=usd(await ro.getUsdPrice(A.usdc));}catch{}}
+    try{$("pVnd").textContent=Number(ethers.formatUnits(await ro.usdVndRate(),18)).toLocaleString()+" ₫";}catch{}
+    if(A.usdc){try{$("pPool").textContent=fmt(await roProto.availableLiquidity(A.usdc),dec(A.usdc),0)+" USDC";}catch{}}
+  }catch(e){}
+}
+async function refreshBalances(){
+  if(!account)return;
+  const parts=[];
+  for(const[lbl,a] of [["WETH",A.weth],["wSOL",A.wsol],["USDC",A.usdc],["VNDD",A.vndd]]){
+    if(!a)continue;try{const b=await erc20(a).balanceOf(account);parts.push(`${lbl} ${fmt(b,dec(a),a===A.usdc?2:2)}`);}catch{}
+  }
+  const eth=await read.getBalance(account);parts.unshift(`ETH ${fmt(eth,18,4)}`);
+  $("balLine").textContent="Your balances — "+parts.join(" · ");
+  if(A.usdc){try{$("supBalLine").textContent="Supplied: "+fmt(await proto.suppliedBalance(A.usdc,account),dec(A.usdc),2)+" USDC";}catch{}}
+}
+async function refreshPositions(){
+  if(!account)return;const body=$("posBody");const n=Number(await proto.getPositionCount(account));
+  if(n===0){body.innerHTML=`<tr><td colspan="6" style="color:var(--muted)">No positions yet.</td></tr>`;return;}
+  let rows="";
+  for(let i=0;i<n;i++){
+    const p=await proto.getPosition(account,i);if(!p.active){rows+=`<tr><td>${i}</td><td colspan="4" style="color:var(--muted)">closed</td><td></td></tr>`;continue;}
+    let owed=0n,ratio=0n,liq=false;
+    try{owed=await proto.currentDebt(account,i);ratio=await proto.collateralRatioBps(account,i);liq=await proto.isLiquidatable(account,i);}catch{}
+    const cl=p.collToken.toLowerCase(),dl=p.debtToken.toLowerCase();
+    const cName=cl===A.weth?.toLowerCase()?"WETH":"wSOL",dName=dl===A.vndd?.toLowerCase()?"VNDD":"USDC";
+    const rPct=ratio===0n?"—":(Number(ratio)/100).toFixed(0)+"%";
+    const tag=liq?`<span class="tag bad">at risk</span>`:Number(ratio)/100<170?`<span class="tag risk">${rPct}</span>`:`<span class="tag ok">${rPct}</span>`;
+    const owedStr=dName==="VNDD"?vnd(owed):fmt(owed,dec(p.debtToken),2)+" USDC";
+    rows+=`<tr><td>${i}</td><td>${fmt(p.collAmount,dec(p.collToken),4)} ${cName}</td><td>${owedStr}</td><td>${tag}</td>
+      <td>${liq?'<span class="tag bad">liquidatable</span>':'<span class="tag ok">healthy</span>'}</td>
+      <td><button class="green sm" onclick="repay(${i})">Repay</button></td></tr>`;
+  }
+  body.innerHTML=rows;
+}
+async function refreshAll(){await refreshPrices();await refreshBalances();await refreshPositions();}
+
+/* ---- actions ---- */
+$("wrapBtn").onclick=()=>send("Wrap ETH",()=>erc20(A.weth).deposit({value:ethers.parseEther($("wrapAmt").value||"0")}));
+$("solBtn").onclick=()=>send("Get wSOL",()=>erc20(A.wsol).faucet());
+$("usdcBtn").onclick=()=>send("Get USDC",()=>erc20(A.usdc).faucet());
+$("vndBtn").onclick=()=>send("Get VNDD",()=>erc20(A.vndd).faucet());
+
+$("collSel").onchange=()=>{$("pythNote").style.display=$("collSel").value==="wsol"?"block":"none";};
+$("openBtn").onclick=async()=>{
+  try{
+    const collTok=tokenForColl($("collSel").value),debtTok=tokenForDebt($("debtSel").value);
+    const collAmt=ethers.parseUnits($("collAmt").value||"0",dec(collTok));
+    const debtAmt=ethers.parseUnits($("debtAmt").value||"0",dec(debtTok));
+    if($("collSel").value==="wsol")await postPythUpdate();
+    await ensureAllowance(collTok,PROTOCOL,collAmt);
+    await send("Open position",()=>proto.openPosition(collTok,collAmt,debtTok,debtAmt));
+  }catch(e){status("Open failed: "+(e.shortMessage||e.message),"err");}
+};
+window.repay=async i=>{
+  try{
+    const p=await proto.getPosition(account,i);const owed=await proto.currentDebt(account,i);
+    const buf=owed+owed/100n; // 1% buffer for interest drift
+    await ensureAllowance(p.debtToken,PROTOCOL,buf);
+    await send(`Repay #${i}`,()=>proto.repay(i));
+  }catch(e){status("Repay failed: "+(e.shortMessage||e.message),"err");}
+};
+$("supBtn").onclick=async()=>{const a=ethers.parseUnits($("supAmt").value||"0",dec(A.usdc));await ensureAllowance(A.usdc,PROTOCOL,a);await send("Supply USDC",()=>proto.supply(A.usdc,a));};
+$("wsupBtn").onclick=async()=>{const a=ethers.parseUnits($("wsupAmt").value||"0",dec(A.usdc));const sc=await proto.scaledSupply(A.usdc,account);const idxAmt=await proto.suppliedBalance(A.usdc,account);
+  // convert requested USDC to scaled proportionally
+  const scaled=idxAmt===0n?0n:a*sc/idxAmt;await send("Withdraw USDC",()=>proto.withdrawSupply(A.usdc,scaled>sc?sc:scaled));};
+$("liqBtn").onclick=async()=>{
+  try{
+    const u=$("liqAddr").value.trim();const id=parseInt($("liqId").value,10);
+    if(!ethers.isAddress(u))return status("Bad borrower address","err");
+    const p=await proto.getPosition(u,id);const owed=await proto.currentDebt(u,id);
+    if(p.collToken.toLowerCase()===A.wsol?.toLowerCase())await postPythUpdate();
+    await ensureAllowance(p.debtToken,PROTOCOL,owed+owed/100n);
+    await send("Liquidate",()=>proto.liquidate(u,id));
+  }catch(e){status("Liquidate failed: "+(e.shortMessage||e.message),"err");}
+};
+
+function setFooter(){
+  const a=(n,x)=>x?`${n} <a href="${EXPLORER}/address/${x}" target="_blank" rel="noopener">${x.slice(0,8)}…${x.slice(-4)}</a>`:"";
+  $("foot").innerHTML=`<b>v2 contracts (Sepolia):</b><br>${[a("Protocol",PROTOCOL),a("Oracle",A.oracle),a("VNDD",A.vndd),a("WETH",A.weth),a("wSOL",A.wsol),a("USDC",A.usdc)].filter(Boolean).join(" · ")}`;
+}
+$("connectBtn").onclick=connect;
+$("saveProtoBtn").onclick=()=>{const v=$("protoInput").value.trim();if(!ethers.isAddress(v))return status("Bad address","err");localStorage.setItem("vndp2pv2.proto",v);location.reload();};
+
+(async()=>{
+  $("protoInput").value=PROTOCOL===ZERO?"":PROTOCOL;
+  if(!ethers.isAddress(PROTOCOL)||PROTOCOL===ZERO){const b=$("cfgBanner");b.style.display="block";b.innerHTML="⚠️ Set the deployed <b>LendingProtocolV2</b> address in the Contract panel below.";status("Waiting for the protocol address.");return;}
+  await loadAddresses();await refreshPrices();status("Read-only prices loaded. Connect a wallet to use the protocol.");
+})();
+</script>
+</body>
+</html>
