@@ -12,3 +12,7 @@ docs/
 
 # Dotenv file
 .env
+
+# Off-chain updater
+offchain/node_modules/
+offchain/.env
