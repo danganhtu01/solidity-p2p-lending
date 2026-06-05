@@ -1,0 +1,14 @@
+{
+  "name": "vnd-rate-updater",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Routes the live Google Finance USD/VND rate on-chain to PriceOracleRouter.setUsdVndRate()",
+  "scripts": {
+    "update": "node update-vnd-rate.mjs",
+    "watch": "node update-vnd-rate.mjs --watch 300"
+  },
+  "dependencies": {
+    "ethers": "^6.13.4"
+  }
+}

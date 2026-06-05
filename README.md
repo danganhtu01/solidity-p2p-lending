@@ -155,6 +155,46 @@ This branch makes the **loan asset a VND-pegged stablecoin** instead of native E
 The pool launched with **1,000,000,000 VNDD** of seeded liquidity and the oracle at **70,000,000 VND/ETH**.
 To try it: grab Sepolia ETH from a faucet, click **Get test VNDD** in the dApp, then lend or borrow.
 
+## v2 — multi-asset protocol (`src/v2/`)
+
+v2 generalizes the single-pair v1 into a **multi-collateral, multi-debt** protocol and makes VNDD a
+**real over-collateralized stablecoin (DAI-style)**. It runs alongside v1.
+
+**Four pairs** — two collaterals × two debt assets, as isolated positions:
+
+| | borrow **VNDD** (minted, DAI-style) | borrow **USDC** (from a supplied pool, Aave-style) |
+|---|---|---|
+| lock **ETH** (WETH) | ETH → VNDD | ETH → USDC |
+| lock **SOL** (wSOL) | SOL → VNDD | SOL → USDC |
+
+- **VNDD** is **minted** against collateral and **burned** on repay — every VNDD is backed by a
+  live collateralized position (`VNDStablecoinV2` grants the protocol a minter role).
+- **USDC** can't be minted (it's Circle's), so it's **borrowed from a pool** that USDC suppliers fund
+  and earn interest on.
+- Positions support **partial repay**, **borrow-more**, a **health factor**, and **liquidation with a
+  bonus + partial seizure** (the borrower keeps any residual collateral).
+
+**Real oracles** (`PriceOracleRouter`): Chainlink **ETH/USD** + **USDC/USD** (push), Pyth **SOL/USD**
+(pull — the frontend posts a signed Hermes update before SOL actions), and an admin **USD→VND** rate
+fed on-chain by an off-chain **Google Finance** keeper (`offchain/update-vnd-rate.mjs`), because no
+decentralized oracle carries the Vietnamese Dong.
+
+| Contract | Responsibility |
+|---|---|
+| `v2/LendingProtocolV2.sol` | Core: open/borrow/repay/withdraw/liquidate, USDC supply pool, USD health factor. |
+| `v2/PriceOracleRouter.sol` | Per-asset price source (Chainlink / Pyth / manual) + USD↔VND. |
+| `v2/tokens/VNDStablecoinV2.sol` | VNDD with role-based mint/burn (the vault is a minter). |
+| `v2/tokens/MockWETH9.sol` | Wrap real test ETH into WETH collateral. |
+| `v2/tokens/MockERC20.sol` | Faucet wSOL (18-dec) + test USDC (6-dec). |
+| `v2/interfaces/IPyth.sol` | Minimal vendored Pyth pull-oracle interface. |
+
+Tested by `test/v2/` — **20 unit tests** (all four pairs, liquidation, supplier interest, partial repay,
+borrow-more, health factor) **plus a fuzz/invariant suite** asserting the protocol always custodies the
+collateral it owes and that USDC supplier claims stay backed by cash + outstanding loans.
+
+Deploy: `forge script script/DeployV2.s.sol --rpc-url sepolia --broadcast --private-key $PRIVATE_KEY --slow`.
+Frontend: `frontend/v2.html`. *(v2 Sepolia addresses are added here after deployment.)*
+
 ## Original Holesky deployment
 
 The source project (with the bugs above) was deployed to **Holesky (chainId 17000)** from Remix.

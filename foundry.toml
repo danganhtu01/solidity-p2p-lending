@@ -10,6 +10,12 @@ remappings = [
     "forge-std/=lib/forge-std/src/",
 ]
 
+# Invariant/fuzz settings — kept modest so CI stays fast; raise locally for deeper runs.
+[invariant]
+runs = 64
+depth = 256
+fail_on_revert = false
+
 [fmt]
 line_length = 120
 tab_width = 4
